@@ -178,7 +178,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # -----------------------------------------------------------------------
 
 
-def _ist_admin(hass: HomeAssistant, call: ServiceCall) -> bool:
+async def _ist_admin(hass: HomeAssistant, call: ServiceCall) -> bool:
     """
     Prüft, ob der Benutzer, der den Service-Aufruf ausgelöst hat, ein
     Administrator ist. Wird für sicherheitsrelevante Aktionen (Aufgaben
@@ -189,10 +189,15 @@ def _ist_admin(hass: HomeAssistant, call: ServiceCall) -> bool:
     Benutzerkontext) aufgerufen, gibt es keine user_id - in diesem Fall
     wird der Aufruf ebenfalls erlaubt, da Automationen/Skripte ohnehin
     nur von Administratoren bearbeitet werden können.
+
+    Hinweis: hass.auth.async_get_user() ist eine Coroutine und muss
+    daher await'et werden - wird das vergessen, liefert die Funktion
+    ein Coroutine-Objekt statt eines User-Objekts zurück, was zu einem
+    "'coroutine' object has no attribute 'is_admin'"-Fehler führt.
     """
     if call.context.user_id is None:
         return True
-    benutzer = hass.auth.async_get_user(call.context.user_id)
+    benutzer = await hass.auth.async_get_user(call.context.user_id)
     return bool(benutzer and benutzer.is_admin)
 
 
@@ -200,7 +205,7 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
     """Registriert alle von dieser Integration bereitgestellten Services."""
 
     async def handle_add_task(call: ServiceCall) -> None:
-        if not _ist_admin(hass, call):
+        if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe anzulegen - abgelehnt.")
             return
         await manager.async_add_task(
@@ -211,19 +216,19 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
         )
 
     async def handle_remove_task(call: ServiceCall) -> None:
-        if not _ist_admin(hass, call):
+        if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe zu löschen - abgelehnt.")
             return
         await manager.async_remove_task(call.data[ATTR_TASK_ID])
 
     async def handle_assign_task(call: ServiceCall) -> None:
-        if not _ist_admin(hass, call):
+        if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe zuzuweisen - abgelehnt.")
             return
         await manager.async_assign_task(call.data[ATTR_TASK_ID], call.data[ATTR_USER_ID])
 
     async def handle_unassign_task(call: ServiceCall) -> None:
-        if not _ist_admin(hass, call):
+        if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Zuweisung zu entfernen - abgelehnt.")
             return
         await manager.async_unassign_task(call.data[ATTR_TASK_ID], call.data[ATTR_USER_ID])
@@ -242,7 +247,7 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
         # Ein normaler Benutzer darf nur SEINE EIGENEN Aufgaben erledigen.
         # Administratoren dürfen dies stellvertretend für jeden Benutzer tun.
-        if call.context.user_id and call.context.user_id != user_id and not _ist_admin(hass, call):
+        if call.context.user_id and call.context.user_id != user_id and not await _ist_admin(hass, call):
             _LOGGER.warning(
                 "Benutzer hat versucht, eine Aufgabe für einen anderen Benutzer "
                 "zu erledigen, ohne Administrator zu sein - abgelehnt."
@@ -252,7 +257,7 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
         await manager.async_complete_task(call.data[ATTR_TASK_ID], user_id)
 
     async def handle_reset_score(call: ServiceCall) -> None:
-        if not _ist_admin(hass, call):
+        if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, einen Punktestand zurückzusetzen - abgelehnt.")
             return
         await manager.async_reset_score(call.data[ATTR_USER_ID])
