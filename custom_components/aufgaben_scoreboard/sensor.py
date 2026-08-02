@@ -91,8 +91,21 @@ class _BasisSensor(SensorEntity):
         )
 
     def _auf_update_reagieren(self) -> None:
-        """Wird vom Dispatcher aufgerufen, sobald sich Daten geändert haben."""
-        self.async_write_ha_state()
+        """
+        Wird vom Dispatcher aufgerufen, sobald sich Daten geändert haben.
+
+        WICHTIG: async_write_ha_state() darf ausschließlich im Event-Loop-
+        Thread aufgerufen werden. Da sich in der Praxis nicht mit letzter
+        Sicherheit vorhersagen lässt, aus welchem Thread heraus der
+        Dispatcher diese Methode letztlich aufruft (abhängig davon, wie
+        Home Assistant den ursprünglich auslösenden Service-Aufruf
+        intern einplant), wird der eigentliche Zustands-Update-Aufruf
+        hier direkt über hass.loop.call_soon_threadsafe() eingeplant.
+        Das garantiert IMMER die korrekte Ausführung im Event-Loop-
+        Thread, unabhängig davon, von wo aus _auf_update_reagieren
+        selbst aufgerufen wurde.
+        """
+        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
 
 
 class BenutzerPunkteSensor(_BasisSensor):
