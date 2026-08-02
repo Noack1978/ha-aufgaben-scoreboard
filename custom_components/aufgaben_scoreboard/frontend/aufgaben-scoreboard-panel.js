@@ -28,15 +28,56 @@ class AufgabenScoreboardPanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     // Merkt sich, ob das "Neue Aufgabe"-Formular gerade aufgeklappt ist.
     this._formularOffen = false;
+    // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
+    // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
+    // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
+    // irgendein völlig anderer Sensor im Haus seinen Wert ändert). Ohne
+    // diesen Vergleich würde das Panel dadurch ständig komplett neu
+    // gerendert werden, was mitten in der Eingabe den Fokus aus den
+    // Formularfeldern wirft. Wir rendern daher nur dann neu, wenn sich
+    // wirklich etwas für uns Relevantes geändert hat.
+    this._letzteSignatur = null;
   }
 
   /**
-   * Wird von Home Assistant gesetzt und bei jeder Zustandsänderung im
-   * System erneut aufgerufen (enthält u. a. alle Entitäts-Zustände).
+   * Wird von Home Assistant gesetzt und bei JEDER Zustandsänderung im
+   * gesamten System erneut aufgerufen (enthält u. a. alle
+   * Entitäts-Zustände). Wir speichern die Referenz immer (wird für
+   * Service-Aufrufe benötigt), rendern die Oberfläche aber nur neu,
+   * wenn sich die für uns relevanten Daten tatsächlich geändert haben.
    */
   set hass(hass) {
     this._hass = hass;
+    const signatur = this._berechneSignatur(hass);
+    if (signatur === this._letzteSignatur) {
+      return;
+    }
+    this._letzteSignatur = signatur;
     this._render();
+  }
+
+  /**
+   * Erstellt eine kompakte Zeichenkette aus allen für dieses Panel
+   * relevanten Entitäts-Zuständen (unsere Punkte-Sensoren + die
+   * Übersichts-Entität) sowie den Admin-Status des Benutzers. Ändert
+   * sich diese Zeichenkette nicht, gibt es für das Panel nichts neu zu
+   * zeichnen.
+   */
+  _berechneSignatur(hass) {
+    if (!hass) return "";
+    const teile = [];
+    for (const entityId in hass.states) {
+      if (!entityId.startsWith("sensor.")) continue;
+      const zustand = hass.states[entityId];
+      const attrs = zustand.attributes || {};
+      if (attrs.user_id || Array.isArray(attrs.alle_aufgaben)) {
+        teile.push(`${entityId}=${zustand.state}|${JSON.stringify(attrs)}`);
+      }
+    }
+    teile.sort();
+    teile.push(`admin=${hass.user ? hass.user.is_admin : ""}`);
+    teile.push(`uid=${hass.user ? hass.user.id : ""}`);
+    return teile.join("~~");
   }
 
   /** Wird von Home Assistant beim Anzeigen des Panels gesetzt. */
@@ -46,6 +87,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
   /** Zeigt an, ob die Seitenleiste im schmalen (mobilen) Modus ist. */
   set narrow(narrow) {
+    if (this._narrow === narrow) return;
     this._narrow = narrow;
     this._render();
   }
@@ -121,8 +163,74 @@ class AufgabenScoreboardPanel extends HTMLElement {
   // Rendering
   // -----------------------------------------------------------------
 
+  /**
+   * Sichert die aktuell im "Neue Aufgabe"-Formular eingegebenen Werte
+   * sowie das Feld, das gerade den Fokus hat (inkl. Cursor-Position).
+   * Wird direkt vor dem Neuzeichnen der Oberfläche aufgerufen, damit ein
+   * währenddessen unvermeidbares Re-Render (z. B. weil sich currently
+   * wirklich Daten geändert haben) die Benutzereingabe nicht verwirft.
+   */
+  _sichereFormularZustand() {
+    const formular = this.shadowRoot.getElementById("neue-aufgabe-formular");
+    if (!formular) return null;
+
+    const aktivesElement = this.shadowRoot.activeElement;
+    const werte = {};
+    formular.querySelectorAll("input, textarea, select").forEach((feld) => {
+      if (!feld.name) return;
+      werte[feld.name] = feld.multiple
+        ? Array.from(feld.selectedOptions).map((o) => o.value)
+        : feld.value;
+    });
+
+    return {
+      werte,
+      fokusName: aktivesElement && aktivesElement.name ? aktivesElement.name : null,
+      selectionStart:
+        aktivesElement && "selectionStart" in aktivesElement ? aktivesElement.selectionStart : null,
+      selectionEnd: aktivesElement && "selectionEnd" in aktivesElement ? aktivesElement.selectionEnd : null,
+    };
+  }
+
+  /** Stellt die mit _sichereFormularZustand() gesicherten Werte/Fokus wieder her. */
+  _stelleFormularZustandWieder(zustand) {
+    if (!zustand) return;
+    const formular = this.shadowRoot.getElementById("neue-aufgabe-formular");
+    if (!formular) return;
+
+    formular.querySelectorAll("input, textarea, select").forEach((feld) => {
+      if (!feld.name || !(feld.name in zustand.werte)) return;
+      const wert = zustand.werte[feld.name];
+      if (feld.multiple) {
+        Array.from(feld.options).forEach((option) => {
+          option.selected = wert.includes(option.value);
+        });
+      } else {
+        feld.value = wert;
+      }
+    });
+
+    if (zustand.fokusName) {
+      const feld = formular.querySelector(`[name="${zustand.fokusName}"]`);
+      if (feld) {
+        feld.focus();
+        if (zustand.selectionStart != null && "setSelectionRange" in feld) {
+          try {
+            feld.setSelectionRange(zustand.selectionStart, zustand.selectionEnd);
+          } catch (fehler) {
+            // Manche Feldtypen (z. B. number) unterstützen setSelectionRange
+            // nicht - das ist unkritisch, der Wert selbst bleibt erhalten.
+          }
+        }
+      }
+    }
+  }
+
   _render() {
     if (!this._hass) return;
+
+    // Formularzustand sichern, BEVOR das DOM ersetzt wird.
+    const gesicherterFormularZustand = this._sichereFormularZustand();
 
     const istAdmin = this._istAdmin();
     const benutzerSensoren = this._sammleBenutzerSensoren();
@@ -160,6 +268,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `;
 
     this._eventListenerRegistrieren(istAdmin, benutzerSensoren);
+
+    // Gesicherte Formularwerte + Fokus wiederherstellen (falls das
+    // Formular offen war und Re-Render trotzdem stattgefunden hat).
+    this._stelleFormularZustandWieder(gesicherterFormularZustand);
   }
 
   _renderEigeneAufgaben(benutzerSensoren, eigeneUserId) {

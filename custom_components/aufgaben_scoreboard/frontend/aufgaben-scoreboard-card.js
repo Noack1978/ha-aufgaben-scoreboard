@@ -29,12 +29,20 @@
 class AufgabenScoreboardCard extends HTMLElement {
   /**
    * Wird von Home Assistant aufgerufen, sobald sich der globale
-   * Zustand (hass-Objekt) ändert - also im Prinzip bei jeder
-   * Zustandsänderung im System. Wir rendern hier neu, sofern sich
-   * unsere relevante Sensor-Entität tatsächlich geändert hat.
+   * Zustand (hass-Objekt) ändert - also im Prinzip bei JEDER
+   * Zustandsänderung im gesamten System, auch bei völlig fachfremden
+   * Entitäten. Um unnötige (und potenziell störende) Neuzeichnungen zu
+   * vermeiden, wird nur dann neu gerendert, wenn sich die für diese
+   * Karte relevante Sensor-Entität tatsächlich geändert hat.
    */
   set hass(hass) {
     this._hass = hass;
+    const sensor = this._findeEigenenSensor();
+    const signatur = sensor ? `${sensor.state}|${JSON.stringify(sensor.attributes)}` : "";
+    if (signatur === this._letzteSignatur) {
+      return;
+    }
+    this._letzteSignatur = signatur;
     this._render();
   }
 
