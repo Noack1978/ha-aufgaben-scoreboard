@@ -107,7 +107,21 @@ class AufgabenScoreboardManager:
         await self._store.async_save(self._data)
         # Alle Sensor-Entitäten (und darüber das Frontend) benachrichtigen,
         # dass sich Daten geändert haben, damit der Zustand aktualisiert wird.
-        async_dispatcher_send(self.hass, SIGNAL_UPDATE)
+        #
+        # WICHTIG: async_dispatcher_send() darf laut Home-Assistant-Regeln
+        # nur direkt aus dem Event-Loop heraus aufgerufen werden. Ruft man
+        # es (auch indirekt, z. B. über den Storage-Mechanismus) aus einem
+        # anderen Thread auf, stürzt die anschließende Aktualisierung der
+        # Sensor-Entität (self.async_write_ha_state()) mit einem
+        # RuntimeError ab - die neue Aufgabe wurde zwar gespeichert, aber
+        # nie an die Oberfläche gemeldet und blieb dadurch unsichtbar.
+        #
+        # hass.add_job() ist die von Home Assistant empfohlene, IMMER
+        # thread-sichere Methode, um eine Funktion "egal aus welchem
+        # Kontext heraus" korrekt im Event-Loop auszuführen. Damit ist die
+        # Aktualisierung robust, unabhängig davon, aus welchem Thread
+        # _async_persist() letztlich angestoßen wird.
+        self.hass.add_job(async_dispatcher_send, self.hass, SIGNAL_UPDATE)
 
     # ------------------------------------------------------------------
     # Aufgaben anlegen / löschen / zuweisen
@@ -143,7 +157,8 @@ class AufgabenScoreboardManager:
         }
         await self._async_persist()
 
-        self.hass.bus.async_fire(
+        self.hass.add_job(
+            self.hass.bus.async_fire,
             EVENT_TASK_ADDED,
             {"task_id": task_id, "name": name, "score": score},
         )
@@ -157,7 +172,7 @@ class AufgabenScoreboardManager:
             _LOGGER.warning("Aufgabe mit ID '%s' existiert nicht, kann nicht entfernt werden.", task_id)
             return
         await self._async_persist()
-        self.hass.bus.async_fire(EVENT_TASK_REMOVED, {"task_id": task_id})
+        self.hass.add_job(self.hass.bus.async_fire, EVENT_TASK_REMOVED, {"task_id": task_id})
         _LOGGER.info("Aufgabe entfernt: '%s'", aufgabe.get("name"))
 
     async def async_assign_task(self, task_id: str, user_id: str) -> None:
@@ -169,8 +184,8 @@ class AufgabenScoreboardManager:
         if user_id not in aufgabe["assigned_to"]:
             aufgabe["assigned_to"].append(user_id)
         await self._async_persist()
-        self.hass.bus.async_fire(
-            EVENT_TASK_ASSIGNED, {"task_id": task_id, "user_id": user_id}
+        self.hass.add_job(
+            self.hass.bus.async_fire, EVENT_TASK_ASSIGNED, {"task_id": task_id, "user_id": user_id}
         )
         _LOGGER.info("Aufgabe '%s' wurde Benutzer '%s' zugewiesen.", aufgabe.get("name"), user_id)
 
@@ -223,7 +238,8 @@ class AufgabenScoreboardManager:
         )
 
         await self._async_persist()
-        self.hass.bus.async_fire(
+        self.hass.add_job(
+            self.hass.bus.async_fire,
             EVENT_TASK_COMPLETED,
             {"task_id": task_id, "user_id": user_id, "score": punkte},
         )
