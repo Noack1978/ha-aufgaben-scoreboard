@@ -1,0 +1,13 @@
+{
+  "domain": "aufgaben_scoreboard",
+  "name": "Aufgaben-Punktesystem",
+  "version": "1.0.0",
+  "documentation": "https://github.com/DEIN-GITHUB-NAME/ha-aufgaben-scoreboard",
+  "issue_tracker": "https://github.com/DEIN-GITHUB-NAME/ha-aufgaben-scoreboard/issues",
+  "codeowners": ["@DEIN-GITHUB-NAME"],
+  "requirements": [],
+  "iot_class": "local_push",
+  "integration_type": "hub",
+  "config_flow": true,
+  "single_config_entry": true
+}

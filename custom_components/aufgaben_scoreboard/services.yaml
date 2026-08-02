@@ -1,0 +1,120 @@
+# Beschreibung der Services für die Anzeige in "Entwicklerwerkzeuge ->
+# Aktionen" sowie im Automatisierungs-Editor von Home Assistant.
+
+add_task:
+  name: Aufgabe anlegen
+  description: >-
+    Legt eine neue Aufgabe an. Nur für Administratoren.
+  fields:
+    name:
+      name: Titel
+      description: Kurzer, aussagekräftiger Titel der Aufgabe.
+      required: true
+      example: "Küche aufräumen"
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      description: Optionale, ausführlichere Beschreibung der Aufgabe.
+      required: false
+      example: "Geschirrspüler ein- und ausräumen, Arbeitsflächen abwischen"
+      selector:
+        text:
+          multiline: true
+    score:
+      name: Punkte
+      description: Anzahl der Punkte, die die Aufgabe bei Erledigung einbringt.
+      required: true
+      example: 10
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    assigned_to:
+      name: Zugewiesene Benutzer
+      description: >-
+        Home-Assistant-Benutzer, denen die Aufgabe zugewiesen wird. Wird
+        nichts angegeben, ist die Aufgabe für alle Benutzer offen.
+      required: false
+      selector:
+        text:
+          multiple: true
+
+remove_task:
+  name: Aufgabe löschen
+  description: Entfernt eine Aufgabe unwiderruflich. Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der zu löschenden Aufgabe.
+      required: true
+      selector:
+        text:
+
+assign_task:
+  name: Aufgabe zuweisen
+  description: Weist eine bestehende Aufgabe einem weiteren Benutzer zu. Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe.
+      required: true
+      selector:
+        text:
+    user_id:
+      name: Benutzer-ID
+      description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
+
+unassign_task:
+  name: Zuweisung entfernen
+  description: Entfernt die Zuweisung eines Benutzers von einer Aufgabe. Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe.
+      required: true
+      selector:
+        text:
+    user_id:
+      name: Benutzer-ID
+      description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
+
+complete_task:
+  name: Aufgabe erledigen
+  description: >-
+    Markiert eine Aufgabe als erledigt und schreibt dem Benutzer die
+    Punkte gut. Wird keine Benutzer-ID angegeben, wird der aufrufende
+    Benutzer verwendet.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe.
+      required: true
+      selector:
+        text:
+    user_id:
+      name: Benutzer-ID
+      description: >-
+        Optionale Benutzer-ID. Ohne Angabe wird der aufrufende Benutzer
+        verwendet (Standardfall bei Nutzung über die Custom Card).
+      required: false
+      selector:
+        text:
+
+reset_score:
+  name: Punktestand zurücksetzen
+  description: Setzt den Punktestand eines Benutzers auf 0 zurück. Nur für Administratoren.
+  fields:
+    user_id:
+      name: Benutzer-ID
+      description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
