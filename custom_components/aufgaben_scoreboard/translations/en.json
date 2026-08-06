@@ -2,12 +2,23 @@
   "config": {
     "step": {
       "user": {
-        "title": "Aufgaben-Punktesystem einrichten",
-        "description": "Richtet die Aufgaben- und Punkteverwaltung ein. Es sind keine weiteren Angaben notwendig."
+        "title": "Set up Task Points System",
+        "description": "Sets up the task and points management. No further information is required."
       }
     },
     "abort": {
-      "already_configured": "Diese Integration ist bereits eingerichtet."
+      "already_configured": "This integration is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Included users",
+        "description": "Choose which Home Assistant users should be considered by this integration. Only selected users get their own points sensor and can be chosen as responsible person when creating/editing tasks. This lets you hide technical users/integration accounts, for example.",
+        "data": {
+          "enabled_users": "Included users"
+        }
+      }
     }
   }
 }
