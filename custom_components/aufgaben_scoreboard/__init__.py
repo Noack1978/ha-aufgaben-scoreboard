@@ -60,6 +60,7 @@ from .const import (
     SERVICE_REMOVE_TASK,
     SERVICE_RESET_SCORE,
     SERVICE_UNASSIGN_TASK,
+    SERVICE_UPDATE_TASK,
 )
 from .manager import AufgabenScoreboardManager
 
@@ -85,6 +86,19 @@ SCHEMA_ADD_TASK = vol.Schema(
         vol.Optional(ATTR_ASSIGNED_TO, default=[]): vol.All(
             cv.ensure_list, [cv.string]
         ),
+    }
+)
+
+SCHEMA_UPDATE_TASK = vol.Schema(
+    {
+        vol.Required(ATTR_TASK_ID): cv.string,
+        # Alle inhaltlichen Felder sind beim Bearbeiten optional - nur
+        # tatsächlich übergebene Felder werden geändert (siehe
+        # AufgabenScoreboardManager.async_update_task).
+        vol.Optional(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION): cv.string,
+        vol.Optional(ATTR_SCORE): vol.Coerce(int),
+        vol.Optional(ATTR_ASSIGNED_TO): vol.All(cv.ensure_list, [cv.string]),
     }
 )
 
@@ -180,6 +194,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not hass.data[DOMAIN]:
             for service in (
                 SERVICE_ADD_TASK,
+                SERVICE_UPDATE_TASK,
                 SERVICE_REMOVE_TASK,
                 SERVICE_ASSIGN_TASK,
                 SERVICE_UNASSIGN_TASK,
@@ -235,6 +250,18 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             assigned_to=call.data.get(ATTR_ASSIGNED_TO, []),
         )
 
+    async def handle_update_task(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe zu bearbeiten - abgelehnt.")
+            return
+        await manager.async_update_task(
+            task_id=call.data[ATTR_TASK_ID],
+            name=call.data.get(ATTR_NAME),
+            description=call.data.get(ATTR_DESCRIPTION),
+            score=call.data.get(ATTR_SCORE),
+            assigned_to=call.data.get(ATTR_ASSIGNED_TO),
+        )
+
     async def handle_remove_task(call: ServiceCall) -> None:
         if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe zu löschen - abgelehnt.")
@@ -283,6 +310,7 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
         await manager.async_reset_score(call.data[ATTR_USER_ID])
 
     hass.services.async_register(DOMAIN, SERVICE_ADD_TASK, handle_add_task, schema=SCHEMA_ADD_TASK)
+    hass.services.async_register(DOMAIN, SERVICE_UPDATE_TASK, handle_update_task, schema=SCHEMA_UPDATE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_REMOVE_TASK, handle_remove_task, schema=SCHEMA_REMOVE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_ASSIGN_TASK, handle_assign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)

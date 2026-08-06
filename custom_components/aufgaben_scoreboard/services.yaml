@@ -41,6 +41,54 @@ add_task:
         text:
           multiple: true
 
+update_task:
+  name: Aufgabe bearbeiten
+  description: >-
+    Bearbeitet eine bestehende Aufgabe nachträglich (Titel, Beschreibung,
+    Punktzahl und/oder Zuweisung). Nur angegebene Felder werden geändert.
+    Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der zu bearbeitenden Aufgabe.
+      required: true
+      selector:
+        text:
+    name:
+      name: Titel
+      description: Neuer Titel der Aufgabe (optional, unverändert wenn leer).
+      required: false
+      example: "Küche aufräumen"
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      description: Neue Beschreibung der Aufgabe (optional).
+      required: false
+      selector:
+        text:
+          multiline: true
+    score:
+      name: Punkte
+      description: Neue Punktzahl der Aufgabe (optional).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    assigned_to:
+      name: Zugewiesene Benutzer
+      description: >-
+        Vollständig neue Liste der zugewiesenen Benutzer (ersetzt die
+        bisherige Zuweisung). Leere Liste = für alle Benutzer offen. Wird
+        das Feld komplett weggelassen, bleibt die bisherige Zuweisung
+        unverändert.
+      required: false
+      selector:
+        text:
+          multiple: true
+
 remove_task:
   name: Aufgabe löschen
   description: Entfernt eine Aufgabe unwiderruflich. Nur für Administratoren.

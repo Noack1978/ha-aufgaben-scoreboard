@@ -29,6 +29,7 @@ from .const import (
     EVENT_TASK_ASSIGNED,
     EVENT_TASK_COMPLETED,
     EVENT_TASK_REMOVED,
+    EVENT_TASK_UPDATED,
     SIGNAL_UPDATE,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -188,6 +189,45 @@ class AufgabenScoreboardManager:
             self.hass.bus.async_fire, EVENT_TASK_ASSIGNED, {"task_id": task_id, "user_id": user_id}
         )
         _LOGGER.info("Aufgabe '%s' wurde Benutzer '%s' zugewiesen.", aufgabe.get("name"), user_id)
+
+    async def async_update_task(
+        self,
+        task_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        score: int | None = None,
+        assigned_to: list[str] | None = None,
+    ) -> bool:
+        """
+        Bearbeitet eine bestehende Aufgabe nachträglich (Titel,
+        Beschreibung, Punktzahl und/oder Zuweisung). Nur die tatsächlich
+        übergebenen Felder werden geändert - ein Feld, das als None
+        übergeben wird (bzw. nicht in call.data enthalten ist), bleibt
+        unverändert. Für "assigned_to" bedeutet das: eine LEERE Liste
+        ([]) setzt die Aufgabe bewusst auf "für alle offen" zurück,
+        während KEINE Angabe (None) die bisherige Zuweisung unangetastet
+        lässt.
+
+        :return: True bei Erfolg, False falls die Aufgabe nicht existiert.
+        """
+        aufgabe = self._data["tasks"].get(task_id)
+        if aufgabe is None:
+            _LOGGER.warning("Aufgabe '%s' nicht gefunden, Bearbeitung nicht möglich.", task_id)
+            return False
+
+        if name is not None:
+            aufgabe["name"] = name
+        if description is not None:
+            aufgabe["description"] = description
+        if score is not None:
+            aufgabe["score"] = int(score)
+        if assigned_to is not None:
+            aufgabe["assigned_to"] = list(assigned_to)
+
+        await self._async_persist()
+        self.hass.add_job(self.hass.bus.async_fire, EVENT_TASK_UPDATED, {"task_id": task_id})
+        _LOGGER.info("Aufgabe '%s' wurde bearbeitet.", aufgabe.get("name"))
+        return True
 
     async def async_unassign_task(self, task_id: str, user_id: str) -> None:
         """Entfernt die Zuweisung eines Benutzers von einer Aufgabe."""

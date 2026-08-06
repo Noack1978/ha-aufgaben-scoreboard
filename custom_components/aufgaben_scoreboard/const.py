@@ -42,6 +42,7 @@ SIGNAL_UPDATE = f"{DOMAIN}_update"
 # -----------------------------------------------------------------------
 
 EVENT_TASK_ADDED = f"{DOMAIN}_task_added"
+EVENT_TASK_UPDATED = f"{DOMAIN}_task_updated"
 EVENT_TASK_COMPLETED = f"{DOMAIN}_task_completed"
 EVENT_TASK_REMOVED = f"{DOMAIN}_task_removed"
 EVENT_TASK_ASSIGNED = f"{DOMAIN}_task_assigned"
@@ -52,6 +53,7 @@ EVENT_TASK_ASSIGNED = f"{DOMAIN}_task_assigned"
 # -----------------------------------------------------------------------
 
 SERVICE_ADD_TASK = "add_task"
+SERVICE_UPDATE_TASK = "update_task"
 SERVICE_REMOVE_TASK = "remove_task"
 SERVICE_ASSIGN_TASK = "assign_task"
 SERVICE_UNASSIGN_TASK = "unassign_task"
@@ -96,3 +98,13 @@ USER_SENSOR_UNIQUE_ID_PREFIX = f"{DOMAIN}_user_"
 # (unabhängig vom Benutzer) als Attribut bereitstellt. Wird u. a. vom
 # Sidebar-Panel für die Admin-/Übersichtsansicht verwendet.
 ALL_TASKS_SENSOR_UNIQUE_ID = f"{DOMAIN}_alle_offenen_aufgaben"
+
+# -----------------------------------------------------------------------
+# Options-Flow: Auswahl, welche Home-Assistant-Benutzer von dieser
+# Integration berücksichtigt werden (eigener Punkte-Sensor + in
+# Zuweisungslisten wählbar). Damit lassen sich z. B. technische
+# Benutzer/Integrations-Accounts, die zwar aktiv aber keine "echten"
+# Haushaltsmitglieder sind, gezielt ausblenden.
+# -----------------------------------------------------------------------
+
+OPTION_ENABLED_USERS = "enabled_users"

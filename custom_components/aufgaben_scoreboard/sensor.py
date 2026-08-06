@@ -32,6 +32,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     ALL_TASKS_SENSOR_UNIQUE_ID,
     DOMAIN,
+    OPTION_ENABLED_USERS,
     SIGNAL_UPDATE,
     USER_SENSOR_UNIQUE_ID_PREFIX,
 )
@@ -50,11 +51,23 @@ async def async_setup_entry(
 
     entitaeten: list[SensorEntity] = [AlleOffenenAufgabenSensor(manager, entry)]
 
-    # Für jeden "echten" Benutzer (kein System-Benutzer, aktiv) einen
+    # Welche Benutzer berücksichtigt werden, kann über den Options-Flow
+    # ("Konfigurieren" bei der Integration) eingeschränkt werden - z. B.
+    # um technische Benutzer/Integrations-Accounts auszublenden, die
+    # zwar aktiv, aber keine echten Haushaltsmitglieder sind. Wurde die
+    # Auswahl noch nie konfiguriert (Schlüssel fehlt in den Options),
+    # verhält sich die Integration wie bisher und berücksichtigt ALLE
+    # aktiven, nicht system-generierten Benutzer.
+    erlaubte_benutzer_ids = entry.options.get(OPTION_ENABLED_USERS)
+
+    # Für jeden "echten" Benutzer (kein System-Benutzer, aktiv, und
+    # sofern konfiguriert in der Benutzerauswahl enthalten) einen
     # eigenen Punktestand-Sensor anlegen.
     alle_benutzer = await hass.auth.async_get_users()
     for benutzer in alle_benutzer:
         if benutzer.system_generated or not benutzer.is_active:
+            continue
+        if erlaubte_benutzer_ids is not None and benutzer.id not in erlaubte_benutzer_ids:
             continue
         entitaeten.append(BenutzerPunkteSensor(manager, entry, benutzer.id, benutzer.name or benutzer.id))
 
