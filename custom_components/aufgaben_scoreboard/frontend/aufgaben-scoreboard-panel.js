@@ -737,6 +737,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
     entitySelector.dataset.feldName = "trigger_entity_id";
     entitySelector.addEventListener("value-changed", (ev) => {
       ev.stopPropagation();
+      // WICHTIG: ha-selector ist eine "controlled component" - sie hält
+      // den ausgewählten Wert NICHT selbst fest, sondern überlässt das
+      // bewusst dem Aufrufer (üblich bei allen HA-Formular-Selectoren).
+      // Ohne dieses explizite Zurückschreiben auf .value würde die
+      // Auswahl beim nächsten Render (siehe unten) wieder verloren gehen.
+      entitySelector.value = ev.detail.value;
       // Neu rendern, damit der Ziel-Zustand-Selector direkt im Anschluss
       // mit der NEU gewählten Entität aufgebaut wird und deren bekannte
       // Zustände vorschlägt (genau wie im Automationen-Editor). Bereits
@@ -751,6 +757,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
     stateSelector.selector = { state: { entity_id: entityWert || undefined } };
     stateSelector.value = stateWert || undefined;
     stateSelector.dataset.feldName = "trigger_state";
+    stateSelector.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      // Aus demselben Grund wie beim Entity-Selector: den gewählten Wert
+      // explizit übernehmen. Hier reicht das (ohne Neu-Rendern), da
+      // beim Absenden direkt aus dem Element gelesen wird (siehe
+      // _vorlagenFormularAbsenden) und kein zweiter Selector davon abhängt.
+      stateSelector.value = ev.detail.value;
+    });
 
     entitySlot.innerHTML = "";
     entitySlot.appendChild(entitySelector);
