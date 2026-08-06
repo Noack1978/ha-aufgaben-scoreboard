@@ -33,6 +33,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Aufgabe anzulegen). Wird über den "Bearbeiten"-Button einer
     // Aufgabe gesetzt.
     this._bearbeiteTaskId = null;
+    // Analog zu _formularOffen/_bearbeiteTaskId, aber für das
+    // Standardaufgaben-Formular. Aufgaben- und Vorlagen-Formular
+    // schließen sich gegenseitig aus (siehe _eventListenerRegistrieren) -
+    // es gibt daher zu jedem Zeitpunkt höchstens EIN offenes Formular im
+    // DOM, was die Formular-Zustand-Sicherung (siehe unten) vereinfacht.
+    this._vorlagenFormularOffen = false;
+    this._bearbeiteVorlageId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -179,6 +186,25 @@ class AufgabenScoreboardPanel extends HTMLElement {
     });
   }
 
+  _vorlageAnlegen(formData) {
+    this._hass.callService("aufgaben_scoreboard", "add_template", formData);
+  }
+
+  _vorlageAktualisieren(templateId, formData) {
+    this._hass.callService("aufgaben_scoreboard", "update_template", {
+      template_id: templateId,
+      ...formData,
+    });
+  }
+
+  _vorlageLoeschen(templateId) {
+    this._hass.callService("aufgaben_scoreboard", "remove_template", { template_id: templateId });
+  }
+
+  _aufgabeAusVorlageAnlegen(templateId) {
+    this._hass.callService("aufgaben_scoreboard", "create_task_from_template", { template_id: templateId });
+  }
+
   // -----------------------------------------------------------------
   // Rendering
   // -----------------------------------------------------------------
@@ -213,6 +239,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
       }
     });
 
+    // Trigger-Felder (ha-selector bzw. dessen Text-Fallback) sind keine
+    // Standard-Formularelemente mit "name"-Attribut, sondern werden über
+    // data-feld-name identifiziert - eigener, einfacherer Durchlauf.
+    formular.querySelectorAll("[data-feld-name]").forEach((feld) => {
+      werte[feld.dataset.feldName] = feld.value;
+    });
+
     return {
       formularId: formular.id,
       werte,
@@ -243,6 +276,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
         });
       } else {
         feld.value = wert;
+      }
+    });
+
+    formular.querySelectorAll("[data-feld-name]").forEach((feld) => {
+      const name = feld.dataset.feldName;
+      if (name in zustand.werte) {
+        feld.value = zustand.werte[name];
       }
     });
 
@@ -314,8 +354,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
         </div>
 
         ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
     `;
+
+    // ha-selector-Elemente (Entität/Zustand für den Trigger) sind keine
+    // im HTML-Template deklarierbaren Standardelemente - sie müssen nach
+    // dem Setzen von innerHTML programmatisch erzeugt und eingebaut
+    // werden (siehe _haSelectorenEinbauen()).
+    this._haSelectorenEinbauen(uebersichtsSensor);
 
     this._eventListenerRegistrieren(istAdmin, benutzerSensoren);
 
@@ -497,6 +544,220 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return treffer ? this._escape(treffer.zustand.attributes.friendly_name || userId) : userId;
   }
 
+  /**
+   * Admin-Bereich "Standardaufgaben" (Vorlagen): Liste + Formular zum
+   * Anlegen/Bearbeiten. Nutzt bewusst dieselben Formular-Feldnamen wie
+   * das Aufgaben-Formular (name/description/score/assigned_to) - da
+   * sich Aufgaben- und Vorlagen-Formular gegenseitig ausschließen
+   * (siehe Konstruktor-Kommentar), gibt es dabei keine Kollision.
+   */
+  _renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) {
+    const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
+
+    const bearbeiteteVorlage = this._bearbeiteVorlageId
+      ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
+      : null;
+    if (this._bearbeiteVorlageId && !bearbeiteteVorlage) {
+      this._bearbeiteVorlageId = null;
+    }
+
+    const formularId = bearbeiteteVorlage ? "vorlage-bearbeiten-formular" : "neue-vorlage-formular";
+    const formularTitel = bearbeiteteVorlage ? "Standardaufgabe bearbeiten" : "Neue Standardaufgabe anlegen";
+    const buttonBeschriftung = bearbeiteteVorlage ? "Änderungen speichern" : "Standardaufgabe anlegen";
+    const vorbelegteBenutzer = bearbeiteteVorlage ? bearbeiteteVorlage.assigned_to || [] : [];
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <div class="admin-kopf">
+          <h2>Standardaufgaben</h2>
+          <button class="btn-secondary" id="toggle-vorlagen-formular">
+            ${this._vorlagenFormularOffen ? "Formular schließen" : "+ Neue Standardaufgabe"}
+          </button>
+        </div>
+
+        ${
+          this._vorlagenFormularOffen
+            ? `
+          <form class="neue-aufgabe-formular formular-mit-zustand" id="${formularId}">
+            <h3 class="formular-titel">${formularTitel}</h3>
+            <label>
+              Titel
+              <input
+                type="text"
+                name="name"
+                required
+                placeholder="z. B. Rasen mähen"
+                value="${bearbeiteteVorlage ? this._escape(bearbeiteteVorlage.name) : ""}"
+              />
+            </label>
+            <label>
+              Beschreibung (optional)
+              <textarea name="description" placeholder="Details zur Aufgabe">${
+                bearbeiteteVorlage ? this._escape(bearbeiteteVorlage.description || "") : ""
+              }</textarea>
+            </label>
+            <label>
+              Punkte
+              <input
+                type="number"
+                name="score"
+                min="0"
+                required
+                value="${bearbeiteteVorlage ? bearbeiteteVorlage.score : 10}"
+              />
+            </label>
+            <fieldset class="zustaendigkeit-feld">
+              <legend>Zuständig (Mehrfachauswahl, leer = für alle offen)</legend>
+              ${this._renderBenutzerCheckboxen(benutzerSensoren, vorbelegteBenutzer)}
+            </fieldset>
+            <label class="multiscoring-feld">
+              <input
+                type="checkbox"
+                name="multiscoring"
+                ${bearbeiteteVorlage && bearbeiteteVorlage.multiscoring ? "checked" : ""}
+              />
+              <span>
+                Multiscoring – jeder zugewiesene Benutzer bekommt beim Anlegen eine
+                eigene, unabhängig erledigbare Aufgabe (statt einer gemeinsamen).
+                Erfordert mindestens einen zugewiesenen Benutzer.
+              </span>
+            </label>
+            <fieldset class="trigger-feld">
+              <legend>Automatische Anlage (optional)</legend>
+              <div class="ha-selector-slot" data-feld="trigger_entity_id"></div>
+              <div class="ha-selector-slot" data-feld="trigger_state"></div>
+              <div class="hinweis-klein">
+                Sobald die gewählte Entität den Ziel-Zustand erreicht, wird
+                automatisch eine Aufgabe aus dieser Vorlage angelegt - sofern
+                nicht bereits eine offene Aufgabe daraus existiert.
+              </div>
+            </fieldset>
+            <div class="formular-aktionen">
+              <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
+              ${
+                bearbeiteteVorlage
+                  ? `<button type="button" class="btn-secondary" id="vorlage-bearbeiten-abbrechen">Abbrechen</button>`
+                  : ""
+              }
+            </div>
+          </form>
+        `
+            : ""
+        }
+
+        <div class="aufgaben-liste">
+          ${
+            vorlagen.length === 0
+              ? `<div class="hinweis">Noch keine Standardaufgaben angelegt.</div>`
+              : vorlagen
+                  .map(
+                    (v) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(v.name)}</div>
+                  ${v.description ? `<div class="aufgaben-beschreibung">${this._escape(v.description)}</div>` : ""}
+                  <div class="aufgaben-zuweisung">
+                    Zuständig: ${
+                      v.assigned_to && v.assigned_to.length
+                        ? v.assigned_to.map((uid) => this._nameFuerUserId(uid, benutzerSensoren)).join(", ")
+                        : "Alle Benutzer"
+                    }
+                  </div>
+                  <div class="vorlage-badges">
+                    ${v.multiscoring ? `<span class="vorlage-badge">🔁 Multiscoring</span>` : ""}
+                    ${
+                      v.trigger_entity_id
+                        ? `<span class="vorlage-badge">⚡ ${this._escape(v.trigger_entity_id)} = ${this._escape(
+                            v.trigger_state
+                          )}</span>`
+                        : ""
+                    }
+                  </div>
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">+${v.score}</span>
+                  <button class="btn-primary vorlage-anlegen-btn" data-template-id="${v.id}">Jetzt anlegen</button>
+                  <button class="btn-secondary vorlage-bearbeiten-btn" data-template-id="${v.id}">Bearbeiten</button>
+                  <button class="btn-danger vorlage-loeschen-btn" data-template-id="${v.id}">Löschen</button>
+                </div>
+              </div>`
+                  )
+                  .join("")
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Baut die ha-selector-Elemente für Trigger-Entität und Ziel-Zustand
+   * in das Vorlagen-Formular ein - programmatisch, da ha-selector über
+   * JS-Eigenschaften (.hass/.selector/.value) konfiguriert wird und
+   * nicht als reines HTML-Attribut im Template-String deklariert werden
+   * kann. ha-selector/ha-entity-picker sind Teil des HA-Frontend-Bundles
+   * und als Custom Elements bereits global registriert - exakt dieselbe
+   * Komponente, die auch der eingebaute Automationen-Editor für
+   * Trigger nutzt (inkl. Zustands-Vorschlägen für die gewählte Entität).
+   *
+   * Fällt auf einfache Textfelder zurück, falls ha-selector aus
+   * irgendeinem Grund nicht verfügbar sein sollte (defensive
+   * Absicherung, sollte in der Praxis nicht vorkommen).
+   */
+  _haSelectorenEinbauen(uebersichtsSensor) {
+    const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
+    const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
+    if (!entitySlot || !stateSlot) return;
+
+    const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
+    const bearbeiteteVorlage = this._bearbeiteVorlageId
+      ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
+      : null;
+
+    const entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
+    const stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
+
+    const HaSelector = customElements.get("ha-selector");
+    if (!HaSelector) {
+      entitySlot.innerHTML = `
+        <label>Auslösende Entität (Entity-ID)
+          <input type="text" data-feld-name="trigger_entity_id" placeholder="z. B. binary_sensor.tuer_garage" value="${this._escape(entityWert)}" />
+        </label>`;
+      stateSlot.innerHTML = `
+        <label>Ziel-Zustand
+          <input type="text" data-feld-name="trigger_state" placeholder="z. B. on" value="${this._escape(stateWert)}" />
+        </label>`;
+      return;
+    }
+
+    const entitySelector = document.createElement("ha-selector");
+    entitySelector.hass = this._hass;
+    entitySelector.label = "Auslösende Entität";
+    entitySelector.selector = { entity: {} };
+    entitySelector.value = entityWert || undefined;
+    entitySelector.dataset.feldName = "trigger_entity_id";
+    entitySelector.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      // Neu rendern, damit der Ziel-Zustand-Selector direkt im Anschluss
+      // mit der NEU gewählten Entität aufgebaut wird und deren bekannte
+      // Zustände vorschlägt (genau wie im Automationen-Editor). Bereits
+      // eingegebene Formularwerte bleiben durch
+      // _sichereFormularZustand()/_stelleFormularZustandWieder() erhalten.
+      this._render();
+    });
+
+    const stateSelector = document.createElement("ha-selector");
+    stateSelector.hass = this._hass;
+    stateSelector.label = "Ziel-Zustand";
+    stateSelector.selector = { state: { entity_id: entityWert || undefined } };
+    stateSelector.value = stateWert || undefined;
+    stateSelector.dataset.feldName = "trigger_state";
+
+    entitySlot.innerHTML = "";
+    entitySlot.appendChild(entitySelector);
+    stateSlot.innerHTML = "";
+    stateSlot.appendChild(stateSelector);
+  }
+
   _eventListenerRegistrieren(istAdmin, benutzerSensoren) {
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
 
@@ -533,13 +794,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
         this._formularOffen = !this._formularOffen;
         // Der Umschalt-Button öffnet immer eine LEERE "Neue Aufgabe" -
         // ein evtl. aktiver Bearbeitungs-Modus wird dabei verlassen.
+        // Aufgaben- und Vorlagen-Formular schließen sich gegenseitig aus.
+        this._bearbeiteTaskId = null;
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
+        this._render();
+      });
+    }
+
+    const toggleVorlagenBtn = this.shadowRoot.getElementById("toggle-vorlagen-formular");
+    if (toggleVorlagenBtn) {
+      toggleVorlagenBtn.addEventListener("click", () => {
+        this._vorlagenFormularOffen = !this._vorlagenFormularOffen;
+        this._bearbeiteVorlageId = null;
+        this._formularOffen = false;
         this._bearbeiteTaskId = null;
         this._render();
       });
     }
 
     const formular = this.shadowRoot.querySelector(".formular-mit-zustand");
-    if (formular) {
+    if (formular && (formular.id === "neue-vorlage-formular" || formular.id === "vorlage-bearbeiten-formular")) {
+      formular.addEventListener("submit", (ev) => this._vorlagenFormularAbsenden(ev, formular));
+    } else if (formular) {
       formular.addEventListener("submit", (ev) => {
         ev.preventDefault();
         const daten = new FormData(formular);
@@ -575,6 +852,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     }
 
+    const vorlageAbbrechenBtn = this.shadowRoot.getElementById("vorlage-bearbeiten-abbrechen");
+    if (vorlageAbbrechenBtn) {
+      vorlageAbbrechenBtn.addEventListener("click", () => {
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
+        this._render();
+      });
+    }
+
     this.shadowRoot.querySelectorAll(".loeschen-btn").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         if (confirm("Diese Aufgabe wirklich löschen?")) {
@@ -587,9 +873,76 @@ class AufgabenScoreboardPanel extends HTMLElement {
       btn.addEventListener("click", (ev) => {
         this._bearbeiteTaskId = ev.target.getAttribute("data-task-id");
         this._formularOffen = true;
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
         this._render();
       });
     });
+
+    this.shadowRoot.querySelectorAll(".vorlage-bearbeiten-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._bearbeiteVorlageId = ev.target.getAttribute("data-template-id");
+        this._vorlagenFormularOffen = true;
+        this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".vorlage-loeschen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diese Standardaufgabe wirklich löschen? Bereits daraus erzeugte Aufgaben bleiben bestehen.")) {
+          this._vorlageLoeschen(ev.target.getAttribute("data-template-id"));
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".vorlage-anlegen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._aufgabeAusVorlageAnlegen(ev.target.getAttribute("data-template-id"));
+      });
+    });
+  }
+
+  /** Verarbeitet das Absenden des Standardaufgaben-Formulars (Anlegen ODER Bearbeiten). */
+  _vorlagenFormularAbsenden(ev, formular) {
+    ev.preventDefault();
+    const daten = new FormData(formular);
+    const ausgewaehlteBenutzer = Array.from(formular.querySelectorAll('input[name="assigned_to"]:checked')).map(
+      (cb) => cb.value
+    );
+    const multiscoringFeld = formular.querySelector('input[name="multiscoring"]');
+    const entityFeld = formular.querySelector('[data-feld-name="trigger_entity_id"]');
+    const stateFeld = formular.querySelector('[data-feld-name="trigger_state"]');
+    const triggerEntityId = entityFeld ? entityFeld.value || "" : "";
+    const triggerState = stateFeld ? stateFeld.value || "" : "";
+
+    const formData = {
+      name: daten.get("name"),
+      description: daten.get("description") || "",
+      score: Number(daten.get("score")),
+      assigned_to: ausgewaehlteBenutzer,
+      multiscoring: !!(multiscoringFeld && multiscoringFeld.checked),
+    };
+
+    if (this._bearbeiteVorlageId) {
+      // Beim Bearbeiten IMMER mitsenden - ein leerer Wert entfernt den
+      // Trigger dabei bewusst (siehe async_update_template).
+      formData.trigger_entity_id = triggerEntityId;
+      formData.trigger_state = triggerState;
+      this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
+    } else {
+      // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
+      // leerer String ist keine gültige Entity-ID und würde die
+      // Service-Validierung von add_template fehlschlagen lassen.
+      if (triggerEntityId) formData.trigger_entity_id = triggerEntityId;
+      if (triggerState) formData.trigger_state = triggerState;
+      this._vorlageAnlegen(formData);
+    }
+
+    this._vorlagenFormularOffen = false;
+    this._bearbeiteVorlageId = null;
+    this._render();
   }
 
   _escape(text) {
@@ -812,6 +1165,66 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .formular-aktionen {
         display: flex;
         gap: 10px;
+      }
+      .multiscoring-feld {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        font-size: 0.9em;
+        color: var(--primary-text-color);
+        cursor: pointer;
+      }
+      .multiscoring-feld input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        margin-top: 2px;
+        accent-color: var(--primary-color);
+        cursor: pointer;
+      }
+      .trigger-feld {
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 6px;
+        padding: 10px 12px 12px;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .trigger-feld legend {
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+        padding: 0 4px;
+      }
+      .ha-selector-slot label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+      .ha-selector-slot input {
+        font-family: inherit;
+        font-size: 1em;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--primary-background-color);
+        color: var(--primary-text-color);
+      }
+      .vorlage-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .vorlage-badge {
+        display: inline-block;
+        font-size: 0.75em;
+        background: rgba(var(--rgb-primary-color, 3,169,244), 0.12);
+        color: var(--primary-color);
+        border-radius: 999px;
+        padding: 2px 9px;
       }
     `;
   }
