@@ -78,6 +78,13 @@ _LOGGER = logging.getLogger(__name__)
 # innerhalb dieser Integration liegen.
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
+# hass.data-Schlüssel: merkt sich, ob der statische Frontend-Pfad in
+# DIESER Home-Assistant-Prozess-Laufzeit bereits registriert wurde (siehe
+# ausführlichen Kommentar in _async_setup_frontend). Bewusst NICHT unter
+# hass.data[DOMAIN] (das ist nach entry_id strukturiert), sondern als
+# eigener, global eindeutiger Schlüssel.
+DATA_STATIC_PATH_REGISTERED = f"{DOMAIN}_static_path_registered"
+
 
 # ---------------------------------------------------------------------
 # Validierungs-Schemas für die einzelnen Service-Aufrufe.
@@ -445,6 +452,20 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
       - ein eigenes Panel in der Seitenleiste, das die volle
         Aufgabenübersicht (inkl. Admin-Funktionen) als eigene Seite
         zeigt.
+
+    WICHTIG - Verhalten bei mehrfachem Neuladen der Integration:
+    Für den statischen Pfad gibt es (anders als beim Panel, siehe
+    async_remove_panel() in async_unload_entry) KEIN Gegenstück zum
+    Abmelden. Registriert man ihn bei jedem Neuladen der Integration
+    (z. B. während der Entwicklung/Beta-Tests, wenn man ohne kompletten
+    Home-Assistant-Neustart neu lädt) erneut, kann das - je nach
+    HA-Version - zu einem Fehler führen, der die nachfolgenden Zeilen
+    (Custom Card, Panel) gar nicht mehr erreicht und damit BEIDE
+    "custom element not found" werden lässt. Der Pfad wird daher nur
+    EINMAL pro Home-Assistant-Prozess-Laufzeit registriert (Merker in
+    hass.data) UND der Aufruf zusätzlich defensiv in try/except
+    gewickelt, damit ein unerwarteter Fehler hier niemals Custom Card
+    oder Panel-Registrierung blockiert.
     """
     card_pfad = FRONTEND_DIR / CARD_JS_FILENAME
     panel_pfad = FRONTEND_DIR / PANEL_JS_FILENAME
@@ -457,19 +478,34 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
         )
         return
 
-    # Statischen Pfad registrieren: alles unter /aufgaben_scoreboard_frontend/
-    # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert.
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                FRONTEND_URL_BASE,
-                str(FRONTEND_DIR),
-                cache_headers=False,
+    if not hass.data.get(DATA_STATIC_PATH_REGISTERED):
+        try:
+            await hass.http.async_register_static_paths(
+                [
+                    StaticPathConfig(
+                        FRONTEND_URL_BASE,
+                        str(FRONTEND_DIR),
+                        cache_headers=False,
+                    )
+                ]
             )
-        ]
-    )
+        except Exception as fehler:  # noqa: BLE001 - bewusst breit, siehe Docstring oben
+            _LOGGER.debug(
+                "Statischer Pfad '%s' konnte nicht (erneut) registriert werden - "
+                "das ist normal, wenn die Integration ohne Home-Assistant-Neustart "
+                "neu geladen wurde (Pfad war bereits von einem früheren Ladevorgang "
+                "vorhanden): %s",
+                FRONTEND_URL_BASE,
+                fehler,
+            )
+        # In JEDEM Fall (Erfolg oder erwarteter "bereits registriert"-Fehler)
+        # als erledigt markieren, damit wir es nicht bei jedem weiteren
+        # Neuladen erneut versuchen.
+        hass.data[DATA_STATIC_PATH_REGISTERED] = True
 
-    # Custom Card global für alle Dashboards verfügbar machen.
+    # Custom Card global für alle Dashboards verfügbar machen. Intern über
+    # ein Set realisiert - mehrfaches Aufrufen mit derselben URL bei einem
+    # Neuladen ist unproblematisch (kein Duplikat, kein Fehler).
     add_extra_js_url(hass, f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}")
 
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
@@ -481,19 +517,26 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
     # Frontends nutzen, und ist der veraltete Weg. "module_url" ist die
     # aktuelle, zukunftssichere Variante, mit der das Panel als
     # ES-Modul geladen wird.
-    async_register_built_in_panel(
-        hass,
-        component_name="custom",
-        sidebar_title=PANEL_TITLE,
-        sidebar_icon=PANEL_ICON,
-        frontend_url_path=PANEL_URL_PATH,
-        config={
-            "_panel_custom": {
-                "name": "aufgaben-scoreboard-panel",
-                "embed_iframe": False,
-                "trust_external": False,
-                "module_url": f"{FRONTEND_URL_BASE}/{PANEL_JS_FILENAME}",
-            }
-        },
-        require_admin=False,
-    )
+    try:
+        async_register_built_in_panel(
+            hass,
+            component_name="custom",
+            sidebar_title=PANEL_TITLE,
+            sidebar_icon=PANEL_ICON,
+            frontend_url_path=PANEL_URL_PATH,
+            config={
+                "_panel_custom": {
+                    "name": "aufgaben-scoreboard-panel",
+                    "embed_iframe": False,
+                    "trust_external": False,
+                    "module_url": f"{FRONTEND_URL_BASE}/{PANEL_JS_FILENAME}",
+                }
+            },
+            require_admin=False,
+        )
+    except ValueError as fehler:
+        # async_register_built_in_panel wirft ValueError, wenn der
+        # url_path bereits registriert ist (z. B. falls async_remove_panel
+        # beim vorherigen Entladen aus irgendeinem Grund nicht griff) -
+        # auch das soll den Rest des Setups nicht zum Absturz bringen.
+        _LOGGER.debug("Panel '%s' war bereits registriert: %s", PANEL_URL_PATH, fehler)
