@@ -75,7 +75,22 @@ Zeigt für **alle Benutzer** eine Rangliste der Punktestände. Im
 Abschnitt "Meine offenen Aufgaben" kann jeder Benutzer seine eigenen
 Aufgaben abhaken. **Administratoren** sehen zusätzlich den
 Verwaltungsbereich, in dem neue Aufgaben angelegt, bestehende Aufgaben
-zusätzlichen Benutzern zugewiesen oder gelöscht werden können.
+über "Bearbeiten" nachträglich geändert (inkl. Titel, Beschreibung,
+Punkte und Zuständigkeit) oder gelöscht werden können. Die Zuständigkeit
+wird dabei per Checkbox-Liste ausgewählt – mehrere Benutzer lassen sich
+so auf einen Blick erkennen, gezielt hinzufügen und auch wieder
+abwählen.
+
+### Berücksichtigte Benutzer konfigurieren
+
+Standardmäßig bekommt jeder aktive, nicht-technische Home-Assistant-
+Benutzer einen eigenen Punkte-Sensor und steht in der
+Zuständigkeits-Auswahl zur Verfügung. Über **Einstellungen → Geräte &
+Dienste → Aufgaben-Punktesystem → Konfigurieren** lässt sich per
+Checkbox-Liste gezielt einschränken, welche Benutzer berücksichtigt
+werden – z. B. um technische Benutzer/Integrations-Accounts
+auszublenden. Die Änderung wird sofort wirksam (die Integration lädt
+sich automatisch neu).
 
 ### Custom Card im Dashboard
 
@@ -110,6 +125,7 @@ Personen → Benutzer**.
 | Service                          | Beschreibung                                          | Nur Admin |
 |-----------------------------------|--------------------------------------------------------|-----------|
 | `aufgaben_scoreboard.add_task`      | Neue Aufgabe anlegen                                   | ✅        |
+| `aufgaben_scoreboard.update_task`   | Bestehende Aufgabe nachträglich bearbeiten             | ✅        |
 | `aufgaben_scoreboard.remove_task`   | Aufgabe löschen                                        | ✅        |
 | `aufgaben_scoreboard.assign_task`   | Aufgabe einem Benutzer zuweisen                        | ✅        |
 | `aufgaben_scoreboard.unassign_task` | Zuweisung eines Benutzers entfernen                    | ✅        |
