@@ -34,7 +34,8 @@ from homeassistant.components.frontend import (
 )
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
 
@@ -143,8 +144,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # ------------------------------------------------------------------
     # 4. Frontend (Custom Card + Sidebar-Panel) registrieren
+    #
+    # WICHTIG: async_register_static_paths() und
+    # async_register_built_in_panel() dürfen erst aufgerufen werden,
+    # wenn das Frontend-Backend von Home Assistant vollständig bereit
+    # ist. Bei einem echten Neustart (nicht bei einem reinen Reload der
+    # Integration) ist async_setup_entry() aber unter Umständen schon
+    # VOR diesem Zeitpunkt fertig - ruft man die Registrierung dann
+    # direkt auf, kann sie ins Leere laufen und Karte/Panel bleiben
+    # nicht verfügbar. Ist hass.state bereits "running", ist alles
+    # bereit und wir registrieren sofort; andernfalls warten wir auf
+    # das EVENT_HOMEASSISTANT_STARTED-Event.
     # ------------------------------------------------------------------
-    await _async_setup_frontend(hass)
+    if hass.state is CoreState.running:
+        await _async_setup_frontend(hass)
+    else:
+        async def _async_setup_frontend_on_start(_event) -> None:
+            await _async_setup_frontend(hass)
+
+        entry.async_on_unload(
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_setup_frontend_on_start)
+        )
 
     return True
 
@@ -311,6 +331,12 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
     # dass Home Assistant das angegebene JavaScript-Modul als eigenes
     # Custom-Element für die gesamte Panel-Seite lädt.
+    #
+    # WICHTIG: "module_url" (nicht "js_url") verwenden. "js_url" liefert
+    # das Skript nur an Clients aus, die noch den alten ES5-Build des
+    # Frontends nutzen, und ist der veraltete Weg. "module_url" ist die
+    # aktuelle, zukunftssichere Variante, mit der das Panel als
+    # ES-Modul geladen wird.
     async_register_built_in_panel(
         hass,
         component_name="custom",
@@ -322,7 +348,7 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
                 "name": "aufgaben-scoreboard-panel",
                 "embed_iframe": False,
                 "trust_external": False,
-                "js_url": f"{FRONTEND_URL_BASE}/{PANEL_JS_FILENAME}",
+                "module_url": f"{FRONTEND_URL_BASE}/{PANEL_JS_FILENAME}",
             }
         },
         require_admin=False,
