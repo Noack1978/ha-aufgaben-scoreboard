@@ -10,16 +10,35 @@ anlegt. Danach übernimmt __init__.py das eigentliche Setup.
 Da in manifest.json "single_config_entry": true gesetzt ist, verhindert
 Home Assistant automatisch, dass die Integration mehrfach eingerichtet
 wird.
+
+Zusätzlich stellt diese Datei den Options-Flow bereit
+(AufgabenScoreboardOptionsFlow): Darüber lässt sich nachträglich (über
+"Einstellungen -> Geräte & Dienste -> Aufgaben-Punktesystem ->
+Konfigurieren") auswählen, welche Home-Assistant-Benutzer von der
+Integration berücksichtigt werden sollen - also einen eigenen
+Punkte-Sensor bekommen und in den Zuweisungslisten (neue Aufgabe
+anlegen/bearbeiten) auswählbar sind. Damit lassen sich z. B. technische
+Benutzer/Integrations-Accounts gezielt ausblenden.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResult
+import voluptuous as vol
 
-from .const import DOMAIN
+from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry, OptionsFlowWithReload
+from homeassistant.core import callback
+from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
+
+from .const import DOMAIN, OPTION_ENABLED_USERS
 
 
 class AufgabenScoreboardConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -42,3 +61,66 @@ class AufgabenScoreboardConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_create_entry(title="Aufgaben-Punktesystem", data={})
 
         return self.async_show_form(step_id="user")
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> AufgabenScoreboardOptionsFlow:
+        """Liefert den Options-Flow-Handler dieser Integration."""
+        return AufgabenScoreboardOptionsFlow()
+
+
+class AufgabenScoreboardOptionsFlow(OptionsFlowWithReload):
+    """
+    Options-Flow zur nachträglichen Auswahl der berücksichtigten Benutzer.
+
+    Wichtig: Diese Klasse darf KEIN __init__ definieren, das
+    self.config_entry setzt (führt seit HA 2025.12 zu einem
+    AttributeError) - self.config_entry wird von OptionsFlowWithReload
+    bereits automatisch bereitgestellt. Wird die Auswahl gespeichert,
+    lädt OptionsFlowWithReload die Integration automatisch neu, sodass
+    die Sensor-Plattform sofort mit der neuen Benutzerauswahl reagiert.
+    """
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Einziger Schritt: Mehrfachauswahl der zu berücksichtigenden Benutzer."""
+        alle_benutzer = [
+            benutzer
+            for benutzer in await self.hass.auth.async_get_users()
+            if not benutzer.system_generated and benutzer.is_active
+        ]
+        gueltige_ids = {benutzer.id for benutzer in alle_benutzer}
+
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={OPTION_ENABLED_USERS: user_input[OPTION_ENABLED_USERS]},
+            )
+
+        # Vorbelegung: bisherige Auswahl aus den Options, oder - falls die
+        # Integration noch nie konfiguriert wurde - ALLE aktuell
+        # vorhandenen Benutzer (entspricht dem bisherigen Verhalten ohne
+        # Filterung, damit sich beim ersten Öffnen nichts unerwartet
+        # ändert).
+        bisherige_auswahl = self.config_entry.options.get(
+            OPTION_ENABLED_USERS, list(gueltige_ids)
+        )
+        # Zwischenzeitlich gelöschte/deaktivierte Benutzer aus der
+        # Vorbelegung entfernen, damit der Selector keine "verwaisten"
+        # Werte anzeigt.
+        vorbelegung = [uid for uid in bisherige_auswahl if uid in gueltige_ids]
+
+        schema = vol.Schema(
+            {
+                vol.Required(OPTION_ENABLED_USERS, default=vorbelegung): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=benutzer.id, label=benutzer.name or benutzer.id)
+                            for benutzer in alle_benutzer
+                        ],
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

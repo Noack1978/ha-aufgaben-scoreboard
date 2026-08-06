@@ -26,8 +26,20 @@ class AufgabenScoreboardPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    // Merkt sich, ob das "Neue Aufgabe"-Formular gerade aufgeklappt ist.
+    // Merkt sich, ob das Aufgaben-Formular gerade aufgeklappt ist.
     this._formularOffen = false;
+    // Ist dieser Wert gesetzt, befindet sich das Formular im
+    // Bearbeitungs-Modus für die Aufgabe mit dieser ID (statt eine neue
+    // Aufgabe anzulegen). Wird über den "Bearbeiten"-Button einer
+    // Aufgabe gesetzt.
+    this._bearbeiteTaskId = null;
+    // Analog zu _formularOffen/_bearbeiteTaskId, aber für das
+    // Standardaufgaben-Formular. Aufgaben- und Vorlagen-Formular
+    // schließen sich gegenseitig aus (siehe _eventListenerRegistrieren) -
+    // es gibt daher zu jedem Zeitpunkt höchstens EIN offenes Formular im
+    // DOM, was die Formular-Zustand-Sicherung (siehe unten) vereinfacht.
+    this._vorlagenFormularOffen = false;
+    this._bearbeiteVorlageId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -83,6 +95,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
   /** Wird von Home Assistant beim Anzeigen des Panels gesetzt. */
   set panel(panel) {
     this._panel = panel;
+    // Nur im Panel-Modus (eigene Seite in der Seitenleiste) gesetzt -
+    // steuert, ob der Menü-Button (☰) im Header angezeigt wird, über
+    // den sich die Seitenleiste ein-/ausblenden lässt (dieselbe Technik
+    // wie bei ha-step-challenge, Music Assistant, Beatify).
+    this._isPanel = true;
   }
 
   /** Zeigt an, ob die Seitenleiste im schmalen (mobilen) Modus ist. */
@@ -147,16 +164,45 @@ class AufgabenScoreboardPanel extends HTMLElement {
     });
   }
 
-  _aufgabeZuweisen(taskId, userId) {
-    if (!userId) return;
-    this._hass.callService("aufgaben_scoreboard", "assign_task", {
+  _neueAufgabeAnlegen(formData) {
+    this._hass.callService("aufgaben_scoreboard", "add_task", formData);
+  }
+
+  /** Setzt den Punktestand eines Benutzers auf 0 zurück. Nur für Administratoren. */
+  _punktestandZuruecksetzen(userId) {
+    this._hass.callService("aufgaben_scoreboard", "reset_score", { user_id: userId });
+  }
+
+  /**
+   * Bearbeitet eine bestehende Aufgabe (Titel/Beschreibung/Punkte und/oder
+   * die vollständige Liste der zuständigen Benutzer). "assigned_to" wird
+   * dabei komplett ERSETZT (nicht nur ergänzt) - so lassen sich über die
+   * Checkbox-Auswahl im Bearbeiten-Formular Benutzer auch wieder abwählen.
+   */
+  _aufgabeAktualisieren(taskId, formData) {
+    this._hass.callService("aufgaben_scoreboard", "update_task", {
       task_id: taskId,
-      user_id: userId,
+      ...formData,
     });
   }
 
-  _neueAufgabeAnlegen(formData) {
-    this._hass.callService("aufgaben_scoreboard", "add_task", formData);
+  _vorlageAnlegen(formData) {
+    this._hass.callService("aufgaben_scoreboard", "add_template", formData);
+  }
+
+  _vorlageAktualisieren(templateId, formData) {
+    this._hass.callService("aufgaben_scoreboard", "update_template", {
+      template_id: templateId,
+      ...formData,
+    });
+  }
+
+  _vorlageLoeschen(templateId) {
+    this._hass.callService("aufgaben_scoreboard", "remove_template", { template_id: templateId });
+  }
+
+  _aufgabeAusVorlageAnlegen(templateId) {
+    this._hass.callService("aufgaben_scoreboard", "create_task_from_template", { template_id: templateId });
   }
 
   // -----------------------------------------------------------------
@@ -171,19 +217,37 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * wirklich Daten geändert haben) die Benutzereingabe nicht verwirft.
    */
   _sichereFormularZustand() {
-    const formular = this.shadowRoot.getElementById("neue-aufgabe-formular");
+    // Es kann jeweils nur EIN Formular gleichzeitig offen sein (entweder
+    // "Neue Aufgabe" ODER die Bearbeitung einer bestehenden Aufgabe) - alle
+    // Formulare tragen dafür die gemeinsame Klasse "formular-mit-zustand".
+    const formular = this.shadowRoot.querySelector(".formular-mit-zustand");
     if (!formular) return null;
 
     const aktivesElement = this.shadowRoot.activeElement;
     const werte = {};
     formular.querySelectorAll("input, textarea, select").forEach((feld) => {
       if (!feld.name) return;
-      werte[feld.name] = feld.multiple
-        ? Array.from(feld.selectedOptions).map((o) => o.value)
-        : feld.value;
+      if (feld.type === "checkbox") {
+        // Mehrere Checkboxen teilen sich denselben "name" (z. B. für die
+        // Zuständigkeits-Auswahl) - alle angehakten Werte werden gesammelt.
+        if (!werte[feld.name]) werte[feld.name] = [];
+        if (feld.checked) werte[feld.name].push(feld.value);
+      } else if (feld.multiple) {
+        werte[feld.name] = Array.from(feld.selectedOptions).map((o) => o.value);
+      } else {
+        werte[feld.name] = feld.value;
+      }
+    });
+
+    // Trigger-Felder (ha-selector bzw. dessen Text-Fallback) sind keine
+    // Standard-Formularelemente mit "name"-Attribut, sondern werden über
+    // data-feld-name identifiziert - eigener, einfacherer Durchlauf.
+    formular.querySelectorAll("[data-feld-name]").forEach((feld) => {
+      werte[feld.dataset.feldName] = feld.value;
     });
 
     return {
+      formularId: formular.id,
       werte,
       fokusName: aktivesElement && aktivesElement.name ? aktivesElement.name : null,
       selectionStart:
@@ -195,18 +259,30 @@ class AufgabenScoreboardPanel extends HTMLElement {
   /** Stellt die mit _sichereFormularZustand() gesicherten Werte/Fokus wieder her. */
   _stelleFormularZustandWieder(zustand) {
     if (!zustand) return;
-    const formular = this.shadowRoot.getElementById("neue-aufgabe-formular");
-    if (!formular) return;
+    const formular = this.shadowRoot.querySelector(".formular-mit-zustand");
+    // Nur wiederherstellen, wenn es sich noch um dasselbe Formular handelt
+    // (z. B. nicht versehentlich Werte des "Neue Aufgabe"-Formulars auf ein
+    // inzwischen geöffnetes Bearbeiten-Formular anwenden).
+    if (!formular || formular.id !== zustand.formularId) return;
 
     formular.querySelectorAll("input, textarea, select").forEach((feld) => {
       if (!feld.name || !(feld.name in zustand.werte)) return;
       const wert = zustand.werte[feld.name];
-      if (feld.multiple) {
+      if (feld.type === "checkbox") {
+        feld.checked = wert.includes(feld.value);
+      } else if (feld.multiple) {
         Array.from(feld.options).forEach((option) => {
           option.selected = wert.includes(option.value);
         });
       } else {
         feld.value = wert;
+      }
+    });
+
+    formular.querySelectorAll("[data-feld-name]").forEach((feld) => {
+      const name = feld.dataset.feldName;
+      if (name in zustand.werte) {
+        feld.value = zustand.werte[name];
       }
     });
 
@@ -218,8 +294,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
           try {
             feld.setSelectionRange(zustand.selectionStart, zustand.selectionEnd);
           } catch (fehler) {
-            // Manche Feldtypen (z. B. number) unterstützen setSelectionRange
-            // nicht - das ist unkritisch, der Wert selbst bleibt erhalten.
+            // Manche Feldtypen (z. B. number, checkbox) unterstützen
+            // setSelectionRange nicht - das ist unkritisch, der Wert
+            // selbst bleibt erhalten.
           }
         }
       }
@@ -241,6 +318,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
       <style>${this._css()}</style>
       <div class="wrapper">
         <div class="kopf">
+          ${this._isPanel ? `<button class="menu-btn" id="menu-btn" title="Menü">☰</button>` : ""}
           <h1>🏆 Aufgaben-Punktesystem</h1>
         </div>
 
@@ -252,7 +330,19 @@ class AufgabenScoreboardPanel extends HTMLElement {
               (b) => `
               <div class="rang-eintrag ${b.zustand.attributes.user_id === eigeneUserId ? "ich" : ""}">
                 <span class="rang-name">${this._escape(b.zustand.attributes.friendly_name || b.entityId)}</span>
-                <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                <div class="rang-rechts">
+                  <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                  ${
+                    istAdmin
+                      ? `<button
+                          class="btn-secondary reset-punkte-btn"
+                          data-user-id="${b.zustand.attributes.user_id}"
+                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                          title="Punktestand zurücksetzen"
+                        >Zurücksetzen</button>`
+                      : ""
+                  }
+                </div>
               </div>`
             )
             .join("")}
@@ -264,8 +354,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
         </div>
 
         ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
     `;
+
+    // ha-selector-Elemente (Entität/Zustand für den Trigger) sind keine
+    // im HTML-Template deklarierbaren Standardelemente - sie müssen nach
+    // dem Setzen von innerHTML programmatisch erzeugt und eingebaut
+    // werden (siehe _haSelectorenEinbauen()).
+    this._haSelectorenEinbauen(uebersichtsSensor);
 
     this._eventListenerRegistrieren(istAdmin, benutzerSensoren);
 
@@ -307,14 +404,21 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const alleAufgaben = uebersichtsSensor ? uebersichtsSensor.attributes.alle_aufgaben : [];
     const offeneAufgaben = alleAufgaben.filter((a) => a.status === "open");
 
-    const benutzerOptionen = benutzerSensoren
-      .map(
-        (b) =>
-          `<option value="${b.zustand.attributes.user_id}">${this._escape(
-            b.zustand.attributes.friendly_name || b.entityId
-          )}</option>`
-      )
-      .join("");
+    // Wird gerade eine bestehende Aufgabe bearbeitet, deren Daten für die
+    // Vorbelegung des Formulars heraussuchen. Existiert die Aufgabe nicht
+    // mehr (z. B. zwischenzeitlich von jemand anderem gelöscht), sauber
+    // in den "Neue Aufgabe"-Modus zurückfallen.
+    const bearbeiteteAufgabe = this._bearbeiteTaskId
+      ? alleAufgaben.find((a) => a.id === this._bearbeiteTaskId)
+      : null;
+    if (this._bearbeiteTaskId && !bearbeiteteAufgabe) {
+      this._bearbeiteTaskId = null;
+    }
+
+    const formularId = bearbeiteteAufgabe ? "aufgabe-bearbeiten-formular" : "neue-aufgabe-formular";
+    const formularTitel = bearbeiteteAufgabe ? "Aufgabe bearbeiten" : "Neue Aufgabe anlegen";
+    const buttonBeschriftung = bearbeiteteAufgabe ? "Änderungen speichern" : "Aufgabe anlegen";
+    const vorbelegteBenutzer = bearbeiteteAufgabe ? bearbeiteteAufgabe.assigned_to || [] : [];
 
     return `
       <div class="abschnitt admin-bereich">
@@ -328,26 +432,46 @@ class AufgabenScoreboardPanel extends HTMLElement {
         ${
           this._formularOffen
             ? `
-          <form class="neue-aufgabe-formular" id="neue-aufgabe-formular">
+          <form class="neue-aufgabe-formular formular-mit-zustand" id="${formularId}">
+            <h3 class="formular-titel">${formularTitel}</h3>
             <label>
               Titel
-              <input type="text" name="name" required placeholder="z. B. Rasen mähen" />
+              <input
+                type="text"
+                name="name"
+                required
+                placeholder="z. B. Rasen mähen"
+                value="${bearbeiteteAufgabe ? this._escape(bearbeiteteAufgabe.name) : ""}"
+              />
             </label>
             <label>
               Beschreibung (optional)
-              <textarea name="description" placeholder="Details zur Aufgabe"></textarea>
+              <textarea name="description" placeholder="Details zur Aufgabe">${
+                bearbeiteteAufgabe ? this._escape(bearbeiteteAufgabe.description || "") : ""
+              }</textarea>
             </label>
             <label>
               Punkte
-              <input type="number" name="score" min="0" value="10" required />
+              <input
+                type="number"
+                name="score"
+                min="0"
+                required
+                value="${bearbeiteteAufgabe ? bearbeiteteAufgabe.score : 10}"
+              />
             </label>
-            <label>
-              Zuweisen an (Mehrfachauswahl möglich, leer = für alle offen)
-              <select name="assigned_to" multiple size="4">
-                ${benutzerOptionen}
-              </select>
-            </label>
-            <button type="submit" class="btn-primary">Aufgabe anlegen</button>
+            <fieldset class="zustaendigkeit-feld">
+              <legend>Zuständig (Mehrfachauswahl, leer = für alle offen)</legend>
+              ${this._renderBenutzerCheckboxen(benutzerSensoren, vorbelegteBenutzer)}
+            </fieldset>
+            <div class="formular-aktionen">
+              <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
+              ${
+                bearbeiteteAufgabe
+                  ? `<button type="button" class="btn-secondary" id="bearbeiten-abbrechen">Abbrechen</button>`
+                  : ""
+              }
+            </div>
           </form>
         `
             : ""
@@ -374,10 +498,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 </div>
                 <div class="aufgaben-aktion">
                   <span class="punkte-badge">+${a.score}</span>
-                  <select class="zuweisen-select" data-task-id="${a.id}">
-                    <option value="">Zuweisen an...</option>
-                    ${benutzerOptionen}
-                  </select>
+                  <button class="btn-secondary bearbeiten-btn" data-task-id="${a.id}">Bearbeiten</button>
                   <button class="btn-danger loeschen-btn" data-task-id="${a.id}">Löschen</button>
                 </div>
               </div>`
@@ -389,13 +510,265 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `;
   }
 
+  /**
+   * Rendert eine Checkbox pro (konfiguriertem) Benutzer für die
+   * Zuständigkeits-Auswahl einer Aufgabe. Ersetzt das frühere
+   * Einzel-Auswahl-Dropdown: so lassen sich mehrere Zuständige auf einen
+   * Blick erkennen, gezielt hinzufügen UND wieder abwählen.
+   */
+  _renderBenutzerCheckboxen(benutzerSensoren, ausgewaehlteIds) {
+    if (!benutzerSensoren.length) {
+      return `<div class="hinweis-klein">
+        Keine Benutzer verfügbar. Unter "Einstellungen -&gt; Geräte &amp; Dienste ->
+        Aufgaben-Punktesystem -> Konfigurieren" lässt sich auswählen, welche
+        Benutzer hier berücksichtigt werden.
+      </div>`;
+    }
+
+    return benutzerSensoren
+      .map((b) => {
+        const userId = b.zustand.attributes.user_id;
+        const name = this._escape(b.zustand.attributes.friendly_name || b.entityId);
+        const checked = ausgewaehlteIds.includes(userId) ? "checked" : "";
+        return `
+          <label class="benutzer-checkbox">
+            <input type="checkbox" name="assigned_to" value="${userId}" ${checked} />
+            <span>${name}</span>
+          </label>`;
+      })
+      .join("");
+  }
+
   _nameFuerUserId(userId, benutzerSensoren) {
     const treffer = benutzerSensoren.find((b) => b.zustand.attributes.user_id === userId);
     return treffer ? this._escape(treffer.zustand.attributes.friendly_name || userId) : userId;
   }
 
+  /**
+   * Admin-Bereich "Standardaufgaben" (Vorlagen): Liste + Formular zum
+   * Anlegen/Bearbeiten. Nutzt bewusst dieselben Formular-Feldnamen wie
+   * das Aufgaben-Formular (name/description/score/assigned_to) - da
+   * sich Aufgaben- und Vorlagen-Formular gegenseitig ausschließen
+   * (siehe Konstruktor-Kommentar), gibt es dabei keine Kollision.
+   */
+  _renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) {
+    const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
+
+    const bearbeiteteVorlage = this._bearbeiteVorlageId
+      ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
+      : null;
+    if (this._bearbeiteVorlageId && !bearbeiteteVorlage) {
+      this._bearbeiteVorlageId = null;
+    }
+
+    const formularId = bearbeiteteVorlage ? "vorlage-bearbeiten-formular" : "neue-vorlage-formular";
+    const formularTitel = bearbeiteteVorlage ? "Standardaufgabe bearbeiten" : "Neue Standardaufgabe anlegen";
+    const buttonBeschriftung = bearbeiteteVorlage ? "Änderungen speichern" : "Standardaufgabe anlegen";
+    const vorbelegteBenutzer = bearbeiteteVorlage ? bearbeiteteVorlage.assigned_to || [] : [];
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <div class="admin-kopf">
+          <h2>Standardaufgaben</h2>
+          <button class="btn-secondary" id="toggle-vorlagen-formular">
+            ${this._vorlagenFormularOffen ? "Formular schließen" : "+ Neue Standardaufgabe"}
+          </button>
+        </div>
+
+        ${
+          this._vorlagenFormularOffen
+            ? `
+          <form class="neue-aufgabe-formular formular-mit-zustand" id="${formularId}">
+            <h3 class="formular-titel">${formularTitel}</h3>
+            <label>
+              Titel
+              <input
+                type="text"
+                name="name"
+                required
+                placeholder="z. B. Rasen mähen"
+                value="${bearbeiteteVorlage ? this._escape(bearbeiteteVorlage.name) : ""}"
+              />
+            </label>
+            <label>
+              Beschreibung (optional)
+              <textarea name="description" placeholder="Details zur Aufgabe">${
+                bearbeiteteVorlage ? this._escape(bearbeiteteVorlage.description || "") : ""
+              }</textarea>
+            </label>
+            <label>
+              Punkte
+              <input
+                type="number"
+                name="score"
+                min="0"
+                required
+                value="${bearbeiteteVorlage ? bearbeiteteVorlage.score : 10}"
+              />
+            </label>
+            <fieldset class="zustaendigkeit-feld">
+              <legend>Zuständig (Mehrfachauswahl, leer = für alle offen)</legend>
+              ${this._renderBenutzerCheckboxen(benutzerSensoren, vorbelegteBenutzer)}
+            </fieldset>
+            <label class="multiscoring-feld">
+              <input
+                type="checkbox"
+                name="multiscoring"
+                ${bearbeiteteVorlage && bearbeiteteVorlage.multiscoring ? "checked" : ""}
+              />
+              <span>
+                Multiscoring – jeder zugewiesene Benutzer bekommt beim Anlegen eine
+                eigene, unabhängig erledigbare Aufgabe (statt einer gemeinsamen).
+                Erfordert mindestens einen zugewiesenen Benutzer.
+              </span>
+            </label>
+            <fieldset class="trigger-feld">
+              <legend>Automatische Anlage (optional)</legend>
+              <div class="ha-selector-slot" data-feld="trigger_entity_id"></div>
+              <div class="ha-selector-slot" data-feld="trigger_state"></div>
+              <div class="hinweis-klein">
+                Sobald die gewählte Entität den Ziel-Zustand erreicht, wird
+                automatisch eine Aufgabe aus dieser Vorlage angelegt - sofern
+                nicht bereits eine offene Aufgabe daraus existiert.
+              </div>
+            </fieldset>
+            <div class="formular-aktionen">
+              <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
+              ${
+                bearbeiteteVorlage
+                  ? `<button type="button" class="btn-secondary" id="vorlage-bearbeiten-abbrechen">Abbrechen</button>`
+                  : ""
+              }
+            </div>
+          </form>
+        `
+            : ""
+        }
+
+        <div class="aufgaben-liste">
+          ${
+            vorlagen.length === 0
+              ? `<div class="hinweis">Noch keine Standardaufgaben angelegt.</div>`
+              : vorlagen
+                  .map(
+                    (v) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(v.name)}</div>
+                  ${v.description ? `<div class="aufgaben-beschreibung">${this._escape(v.description)}</div>` : ""}
+                  <div class="aufgaben-zuweisung">
+                    Zuständig: ${
+                      v.assigned_to && v.assigned_to.length
+                        ? v.assigned_to.map((uid) => this._nameFuerUserId(uid, benutzerSensoren)).join(", ")
+                        : "Alle Benutzer"
+                    }
+                  </div>
+                  <div class="vorlage-badges">
+                    ${v.multiscoring ? `<span class="vorlage-badge">🔁 Multiscoring</span>` : ""}
+                    ${
+                      v.trigger_entity_id
+                        ? `<span class="vorlage-badge">⚡ ${this._escape(v.trigger_entity_id)} = ${this._escape(
+                            v.trigger_state
+                          )}</span>`
+                        : ""
+                    }
+                  </div>
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">+${v.score}</span>
+                  <button class="btn-primary vorlage-anlegen-btn" data-template-id="${v.id}">Jetzt anlegen</button>
+                  <button class="btn-secondary vorlage-bearbeiten-btn" data-template-id="${v.id}">Bearbeiten</button>
+                  <button class="btn-danger vorlage-loeschen-btn" data-template-id="${v.id}">Löschen</button>
+                </div>
+              </div>`
+                  )
+                  .join("")
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Baut die ha-selector-Elemente für Trigger-Entität und Ziel-Zustand
+   * in das Vorlagen-Formular ein - programmatisch, da ha-selector über
+   * JS-Eigenschaften (.hass/.selector/.value) konfiguriert wird und
+   * nicht als reines HTML-Attribut im Template-String deklariert werden
+   * kann. ha-selector/ha-entity-picker sind Teil des HA-Frontend-Bundles
+   * und als Custom Elements bereits global registriert - exakt dieselbe
+   * Komponente, die auch der eingebaute Automationen-Editor für
+   * Trigger nutzt (inkl. Zustands-Vorschlägen für die gewählte Entität).
+   *
+   * Fällt auf einfache Textfelder zurück, falls ha-selector aus
+   * irgendeinem Grund nicht verfügbar sein sollte (defensive
+   * Absicherung, sollte in der Praxis nicht vorkommen).
+   */
+  _haSelectorenEinbauen(uebersichtsSensor) {
+    const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
+    const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
+    if (!entitySlot || !stateSlot) return;
+
+    const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
+    const bearbeiteteVorlage = this._bearbeiteVorlageId
+      ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
+      : null;
+
+    const entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
+    const stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
+
+    const HaSelector = customElements.get("ha-selector");
+    if (!HaSelector) {
+      entitySlot.innerHTML = `
+        <label>Auslösende Entität (Entity-ID)
+          <input type="text" data-feld-name="trigger_entity_id" placeholder="z. B. binary_sensor.tuer_garage" value="${this._escape(entityWert)}" />
+        </label>`;
+      stateSlot.innerHTML = `
+        <label>Ziel-Zustand
+          <input type="text" data-feld-name="trigger_state" placeholder="z. B. on" value="${this._escape(stateWert)}" />
+        </label>`;
+      return;
+    }
+
+    const entitySelector = document.createElement("ha-selector");
+    entitySelector.hass = this._hass;
+    entitySelector.label = "Auslösende Entität";
+    entitySelector.selector = { entity: {} };
+    entitySelector.value = entityWert || undefined;
+    entitySelector.dataset.feldName = "trigger_entity_id";
+    entitySelector.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      // Neu rendern, damit der Ziel-Zustand-Selector direkt im Anschluss
+      // mit der NEU gewählten Entität aufgebaut wird und deren bekannte
+      // Zustände vorschlägt (genau wie im Automationen-Editor). Bereits
+      // eingegebene Formularwerte bleiben durch
+      // _sichereFormularZustand()/_stelleFormularZustandWieder() erhalten.
+      this._render();
+    });
+
+    const stateSelector = document.createElement("ha-selector");
+    stateSelector.hass = this._hass;
+    stateSelector.label = "Ziel-Zustand";
+    stateSelector.selector = { state: { entity_id: entityWert || undefined } };
+    stateSelector.value = stateWert || undefined;
+    stateSelector.dataset.feldName = "trigger_state";
+
+    entitySlot.innerHTML = "";
+    entitySlot.appendChild(entitySelector);
+    stateSlot.innerHTML = "";
+    stateSlot.appendChild(stateSelector);
+  }
+
   _eventListenerRegistrieren(istAdmin, benutzerSensoren) {
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
+
+    const menuBtn = this.shadowRoot.getElementById("menu-btn");
+    if (menuBtn) {
+      menuBtn.addEventListener("click", () => {
+        // Feuert dasselbe HA-Event, über das auch Music Assistant und
+        // Beatify die Seitenleiste ein-/ausblenden.
+        this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true }));
+      });
+    }
 
     this.shadowRoot.querySelectorAll(".eigene-erledigen").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
@@ -405,29 +778,85 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     if (!istAdmin) return;
 
+    this.shadowRoot.querySelectorAll(".reset-punkte-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const userId = ev.target.getAttribute("data-user-id");
+        const userName = ev.target.getAttribute("data-user-name");
+        if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen?`)) {
+          this._punktestandZuruecksetzen(userId);
+        }
+      });
+    });
+
     const toggleBtn = this.shadowRoot.getElementById("toggle-formular");
     if (toggleBtn) {
       toggleBtn.addEventListener("click", () => {
         this._formularOffen = !this._formularOffen;
+        // Der Umschalt-Button öffnet immer eine LEERE "Neue Aufgabe" -
+        // ein evtl. aktiver Bearbeitungs-Modus wird dabei verlassen.
+        // Aufgaben- und Vorlagen-Formular schließen sich gegenseitig aus.
+        this._bearbeiteTaskId = null;
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
         this._render();
       });
     }
 
-    const formular = this.shadowRoot.getElementById("neue-aufgabe-formular");
-    if (formular) {
+    const toggleVorlagenBtn = this.shadowRoot.getElementById("toggle-vorlagen-formular");
+    if (toggleVorlagenBtn) {
+      toggleVorlagenBtn.addEventListener("click", () => {
+        this._vorlagenFormularOffen = !this._vorlagenFormularOffen;
+        this._bearbeiteVorlageId = null;
+        this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._render();
+      });
+    }
+
+    const formular = this.shadowRoot.querySelector(".formular-mit-zustand");
+    if (formular && (formular.id === "neue-vorlage-formular" || formular.id === "vorlage-bearbeiten-formular")) {
+      formular.addEventListener("submit", (ev) => this._vorlagenFormularAbsenden(ev, formular));
+    } else if (formular) {
       formular.addEventListener("submit", (ev) => {
         ev.preventDefault();
         const daten = new FormData(formular);
-        const ausgewaehlteBenutzer = Array.from(formular.querySelector("select[name=assigned_to]").selectedOptions).map(
-          (o) => o.value
-        );
-        this._neueAufgabeAnlegen({
+        const ausgewaehlteBenutzer = Array.from(
+          formular.querySelectorAll('input[name="assigned_to"]:checked')
+        ).map((cb) => cb.value);
+
+        const formData = {
           name: daten.get("name"),
           description: daten.get("description") || "",
           score: Number(daten.get("score")),
           assigned_to: ausgewaehlteBenutzer,
-        });
+        };
+
+        if (this._bearbeiteTaskId) {
+          this._aufgabeAktualisieren(this._bearbeiteTaskId, formData);
+        } else {
+          this._neueAufgabeAnlegen(formData);
+        }
+
         this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._render();
+      });
+    }
+
+    const abbrechenBtn = this.shadowRoot.getElementById("bearbeiten-abbrechen");
+    if (abbrechenBtn) {
+      abbrechenBtn.addEventListener("click", () => {
+        this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._render();
+      });
+    }
+
+    const vorlageAbbrechenBtn = this.shadowRoot.getElementById("vorlage-bearbeiten-abbrechen");
+    if (vorlageAbbrechenBtn) {
+      vorlageAbbrechenBtn.addEventListener("click", () => {
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
         this._render();
       });
     }
@@ -440,12 +869,80 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
-    this.shadowRoot.querySelectorAll(".zuweisen-select").forEach((select) => {
-      select.addEventListener("change", (ev) => {
-        this._aufgabeZuweisen(ev.target.getAttribute("data-task-id"), ev.target.value);
-        ev.target.value = "";
+    this.shadowRoot.querySelectorAll(".bearbeiten-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._bearbeiteTaskId = ev.target.getAttribute("data-task-id");
+        this._formularOffen = true;
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
+        this._render();
       });
     });
+
+    this.shadowRoot.querySelectorAll(".vorlage-bearbeiten-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._bearbeiteVorlageId = ev.target.getAttribute("data-template-id");
+        this._vorlagenFormularOffen = true;
+        this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".vorlage-loeschen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diese Standardaufgabe wirklich löschen? Bereits daraus erzeugte Aufgaben bleiben bestehen.")) {
+          this._vorlageLoeschen(ev.target.getAttribute("data-template-id"));
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".vorlage-anlegen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._aufgabeAusVorlageAnlegen(ev.target.getAttribute("data-template-id"));
+      });
+    });
+  }
+
+  /** Verarbeitet das Absenden des Standardaufgaben-Formulars (Anlegen ODER Bearbeiten). */
+  _vorlagenFormularAbsenden(ev, formular) {
+    ev.preventDefault();
+    const daten = new FormData(formular);
+    const ausgewaehlteBenutzer = Array.from(formular.querySelectorAll('input[name="assigned_to"]:checked')).map(
+      (cb) => cb.value
+    );
+    const multiscoringFeld = formular.querySelector('input[name="multiscoring"]');
+    const entityFeld = formular.querySelector('[data-feld-name="trigger_entity_id"]');
+    const stateFeld = formular.querySelector('[data-feld-name="trigger_state"]');
+    const triggerEntityId = entityFeld ? entityFeld.value || "" : "";
+    const triggerState = stateFeld ? stateFeld.value || "" : "";
+
+    const formData = {
+      name: daten.get("name"),
+      description: daten.get("description") || "",
+      score: Number(daten.get("score")),
+      assigned_to: ausgewaehlteBenutzer,
+      multiscoring: !!(multiscoringFeld && multiscoringFeld.checked),
+    };
+
+    if (this._bearbeiteVorlageId) {
+      // Beim Bearbeiten IMMER mitsenden - ein leerer Wert entfernt den
+      // Trigger dabei bewusst (siehe async_update_template).
+      formData.trigger_entity_id = triggerEntityId;
+      formData.trigger_state = triggerState;
+      this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
+    } else {
+      // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
+      // leerer String ist keine gültige Entity-ID und würde die
+      // Service-Validierung von add_template fehlschlagen lassen.
+      if (triggerEntityId) formData.trigger_entity_id = triggerEntityId;
+      if (triggerState) formData.trigger_state = triggerState;
+      this._vorlageAnlegen(formData);
+    }
+
+    this._vorlagenFormularOffen = false;
+    this._bearbeiteVorlageId = null;
+    this._render();
   }
 
   _escape(text) {
@@ -467,10 +964,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
         margin: 0 auto;
         padding: 24px 16px 64px 16px;
       }
+      .kopf {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
       .kopf h1 {
         font-size: 1.6em;
         color: var(--primary-text-color);
         margin: 0 0 20px 0;
+      }
+      .menu-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 1.3em;
+        color: var(--primary-text-color);
+        padding: 4px 8px 24px 0;
+        line-height: 1;
+        flex-shrink: 0;
+        opacity: 0.8;
+      }
+      .menu-btn:hover {
+        opacity: 1;
       }
       h2 {
         font-size: 1.15em;
@@ -489,13 +1005,23 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .rang-eintrag {
         display: flex;
         justify-content: space-between;
+        align-items: center;
         padding: 12px 16px;
         border-bottom: 1px solid var(--divider-color, #eee);
         color: var(--primary-text-color);
       }
       .rang-eintrag:last-child { border-bottom: none; }
       .rang-eintrag.ich { background: rgba(var(--rgb-primary-color, 3,169,244), 0.08); font-weight: 600; }
+      .rang-rechts {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
       .rang-punkte { color: var(--primary-color); font-weight: 700; }
+      .reset-punkte-btn {
+        font-size: 0.8em;
+        padding: 4px 10px;
+      }
 
       .hinweis {
         color: var(--secondary-text-color);
@@ -601,8 +1127,104 @@ class AufgabenScoreboardPanel extends HTMLElement {
         background: var(--primary-background-color);
         color: var(--primary-text-color);
       }
-      .zuweisen-select {
-        max-width: 140px;
+      .formular-titel {
+        margin: 0;
+        font-size: 1.05em;
+        color: var(--primary-text-color);
+      }
+      .zustaendigkeit-feld {
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 6px;
+        padding: 10px 12px 12px;
+        margin: 0;
+      }
+      .zustaendigkeit-feld legend {
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+        padding: 0 4px;
+      }
+      .benutzer-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 2px;
+        font-size: 0.95em;
+        color: var(--primary-text-color);
+        cursor: pointer;
+      }
+      .benutzer-checkbox input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--primary-color);
+        cursor: pointer;
+      }
+      .hinweis-klein {
+        font-size: 0.85em;
+        color: var(--secondary-text-color);
+      }
+      .formular-aktionen {
+        display: flex;
+        gap: 10px;
+      }
+      .multiscoring-feld {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        font-size: 0.9em;
+        color: var(--primary-text-color);
+        cursor: pointer;
+      }
+      .multiscoring-feld input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        margin-top: 2px;
+        accent-color: var(--primary-color);
+        cursor: pointer;
+      }
+      .trigger-feld {
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 6px;
+        padding: 10px 12px 12px;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .trigger-feld legend {
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+        padding: 0 4px;
+      }
+      .ha-selector-slot label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+      .ha-selector-slot input {
+        font-family: inherit;
+        font-size: 1em;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--primary-background-color);
+        color: var(--primary-text-color);
+      }
+      .vorlage-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .vorlage-badge {
+        display: inline-block;
+        font-size: 0.75em;
+        background: rgba(var(--rgb-primary-color, 3,169,244), 0.12);
+        color: var(--primary-color);
+        border-radius: 999px;
+        padding: 2px 9px;
       }
     `;
   }

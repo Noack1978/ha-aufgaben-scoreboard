@@ -41,6 +41,54 @@ add_task:
         text:
           multiple: true
 
+update_task:
+  name: Aufgabe bearbeiten
+  description: >-
+    Bearbeitet eine bestehende Aufgabe nachträglich (Titel, Beschreibung,
+    Punktzahl und/oder Zuweisung). Nur angegebene Felder werden geändert.
+    Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der zu bearbeitenden Aufgabe.
+      required: true
+      selector:
+        text:
+    name:
+      name: Titel
+      description: Neuer Titel der Aufgabe (optional, unverändert wenn leer).
+      required: false
+      example: "Küche aufräumen"
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      description: Neue Beschreibung der Aufgabe (optional).
+      required: false
+      selector:
+        text:
+          multiline: true
+    score:
+      name: Punkte
+      description: Neue Punktzahl der Aufgabe (optional).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    assigned_to:
+      name: Zugewiesene Benutzer
+      description: >-
+        Vollständig neue Liste der zugewiesenen Benutzer (ersetzt die
+        bisherige Zuweisung). Leere Liste = für alle Benutzer offen. Wird
+        das Feld komplett weggelassen, bleibt die bisherige Zuweisung
+        unverändert.
+      required: false
+      selector:
+        text:
+          multiple: true
+
 remove_task:
   name: Aufgabe löschen
   description: Entfernt eine Aufgabe unwiderruflich. Nur für Administratoren.
@@ -115,6 +163,158 @@ reset_score:
     user_id:
       name: Benutzer-ID
       description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
+
+add_template:
+  name: Standardaufgabe anlegen
+  description: >-
+    Legt eine wiederverwendbare Standardaufgabe (Vorlage) an, aus der
+    sich später jederzeit erneut konkrete Aufgaben erzeugen lassen -
+    manuell per Button oder automatisch per Entitäts-Trigger. Nur für
+    Administratoren.
+  fields:
+    name:
+      name: Titel
+      description: Kurzer, aussagekräftiger Titel.
+      required: true
+      example: "Rasen mähen"
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      description: Optionale, ausführlichere Beschreibung.
+      required: false
+      selector:
+        text:
+          multiline: true
+    score:
+      name: Punkte
+      description: Anzahl der Punkte, die eine daraus erzeugte Aufgabe bei Erledigung einbringt.
+      required: true
+      example: 10
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    assigned_to:
+      name: Zugewiesene Benutzer
+      description: >-
+        Home-Assistant-Benutzer, denen daraus erzeugte Aufgaben
+        zugewiesen werden. Wird nichts angegeben, ist die Aufgabe für
+        alle Benutzer offen (bei aktiviertem Multiscoring ist mindestens
+        ein Benutzer erforderlich).
+      required: false
+      selector:
+        text:
+          multiple: true
+    multiscoring:
+      name: Multiscoring
+      description: >-
+        Bei Aktivierung wird beim Anlegen aus dieser Vorlage für JEDEN
+        zugewiesenen Benutzer eine eigene, unabhängig erledigbare
+        Aufgabe erzeugt (statt einer gemeinsamen) - jeder kann so
+        eigene Punkte sammeln.
+      required: false
+      default: false
+      selector:
+        boolean:
+    trigger_entity_id:
+      name: Auslösende Entität
+      description: >-
+        Optional. Sobald diese Entität den unten angegebenen Zielwert
+        erreicht, wird automatisch eine Aufgabe aus dieser Vorlage
+        angelegt - sofern nicht bereits eine offene Aufgabe daraus
+        existiert (Duplikat-Schutz).
+      required: false
+      selector:
+        entity:
+    trigger_state:
+      name: Ziel-Zustand
+      description: Der Zustandswert der auslösenden Entität, bei dessen Erreichen automatisch eine Aufgabe angelegt wird (z. B. "on").
+      required: false
+      selector:
+        text:
+
+update_template:
+  name: Standardaufgabe bearbeiten
+  description: >-
+    Bearbeitet eine bestehende Standardaufgabe nachträglich. Nur
+    angegebene Felder werden geändert. Bei trigger_entity_id/
+    trigger_state entfernt ein LEERER Wert den Trigger bewusst. Nur für
+    Administratoren.
+  fields:
+    template_id:
+      name: Vorlagen-ID
+      description: Die eindeutige ID der zu bearbeitenden Standardaufgabe.
+      required: true
+      selector:
+        text:
+    name:
+      name: Titel
+      required: false
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      required: false
+      selector:
+        text:
+          multiline: true
+    score:
+      name: Punkte
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+    assigned_to:
+      name: Zugewiesene Benutzer
+      required: false
+      selector:
+        text:
+          multiple: true
+    multiscoring:
+      name: Multiscoring
+      required: false
+      selector:
+        boolean:
+    trigger_entity_id:
+      name: Auslösende Entität
+      required: false
+      selector:
+        entity:
+    trigger_state:
+      name: Ziel-Zustand
+      required: false
+      selector:
+        text:
+
+remove_template:
+  name: Standardaufgabe löschen
+  description: >-
+    Entfernt eine Standardaufgabe unwiderruflich. Bereits daraus
+    erzeugte Aufgaben bleiben davon unberührt. Nur für Administratoren.
+  fields:
+    template_id:
+      name: Vorlagen-ID
+      description: Die eindeutige ID der zu löschenden Standardaufgabe.
+      required: true
+      selector:
+        text:
+
+create_task_from_template:
+  name: Aufgabe aus Standardaufgabe anlegen
+  description: >-
+    Legt manuell eine (oder bei Multiscoring mehrere) konkrete, offene
+    Aufgabe(n) aus einer Standardaufgabe an. Nur für Administratoren.
+  fields:
+    template_id:
+      name: Vorlagen-ID
+      description: Die eindeutige ID der Standardaufgabe.
       required: true
       selector:
         text:

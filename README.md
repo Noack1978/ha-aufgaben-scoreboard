@@ -75,7 +75,47 @@ Zeigt für **alle Benutzer** eine Rangliste der Punktestände. Im
 Abschnitt "Meine offenen Aufgaben" kann jeder Benutzer seine eigenen
 Aufgaben abhaken. **Administratoren** sehen zusätzlich den
 Verwaltungsbereich, in dem neue Aufgaben angelegt, bestehende Aufgaben
-zusätzlichen Benutzern zugewiesen oder gelöscht werden können.
+über "Bearbeiten" nachträglich geändert (inkl. Titel, Beschreibung,
+Punkte und Zuständigkeit) oder gelöscht werden können. Die Zuständigkeit
+wird dabei per Checkbox-Liste ausgewählt – mehrere Benutzer lassen sich
+so auf einen Blick erkennen, gezielt hinzufügen und auch wieder
+abwählen.
+
+### Berücksichtigte Benutzer konfigurieren
+
+Standardmäßig bekommt jeder aktive, nicht-technische Home-Assistant-
+Benutzer einen eigenen Punkte-Sensor und steht in der
+Zuständigkeits-Auswahl zur Verfügung. Über **Einstellungen → Geräte &
+Dienste → Aufgaben-Punktesystem → Konfigurieren** lässt sich per
+Checkbox-Liste gezielt einschränken, welche Benutzer berücksichtigt
+werden – z. B. um technische Benutzer/Integrations-Accounts
+auszublenden. Die Änderung wird sofort wirksam (die Integration lädt
+sich automatisch neu).
+
+### Standardaufgaben (Vorlagen)
+
+Im Verwaltungsbereich gibt es einen eigenen Abschnitt „Standardaufgaben“
+für wiederkehrende Aufgaben, die nicht jedes Mal neu angelegt werden
+sollen (z. B. „Rasen mähen“, „Mülleimer rausbringen“). Eine
+Standardaufgabe legt Titel, Beschreibung, Punkte und Zuständigkeit
+einmalig fest; konkrete, erledigbare Aufgaben lassen sich daraus
+beliebig oft erzeugen:
+
+- **Manuell**: Button „Jetzt anlegen“ bei der jeweiligen Standardaufgabe.
+- **Automatisch**: über einen optionalen Entitäts-Trigger (Auswahl von
+  Entität + Ziel-Zustand direkt im Formular, mit derselben
+  Entitäts-/Zustands-Auswahl wie im Automationen-Editor). Sobald die
+  gewählte Entität den Zielwert erreicht, wird automatisch eine Aufgabe
+  angelegt – aber nur, wenn nicht bereits eine offene Aufgabe aus
+  derselben Vorlage existiert (Duplikat-Schutz).
+
+**Multiscoring**: Ist diese Option bei einer Standardaufgabe aktiviert,
+entsteht beim Anlegen für **jeden zugewiesenen Benutzer eine eigene,
+unabhängig erledigbare Aufgabe** (statt einer gemeinsamen) – jeder kann
+so eigene Punkte sammeln. Erfordert mindestens einen zugewiesenen
+Benutzer. In der Übersicht erscheint dadurch pro Benutzer eine eigene
+Karte; erledigt jemand seine, verschwindet nur diese – die Aufgaben der
+übrigen zugewiesenen Benutzer bleiben unberührt bestehen.
 
 ### Custom Card im Dashboard
 
@@ -110,11 +150,16 @@ Personen → Benutzer**.
 | Service                          | Beschreibung                                          | Nur Admin |
 |-----------------------------------|--------------------------------------------------------|-----------|
 | `aufgaben_scoreboard.add_task`      | Neue Aufgabe anlegen                                   | ✅        |
+| `aufgaben_scoreboard.update_task`   | Bestehende Aufgabe nachträglich bearbeiten             | ✅        |
 | `aufgaben_scoreboard.remove_task`   | Aufgabe löschen                                        | ✅        |
 | `aufgaben_scoreboard.assign_task`   | Aufgabe einem Benutzer zuweisen                        | ✅        |
 | `aufgaben_scoreboard.unassign_task` | Zuweisung eines Benutzers entfernen                    | ✅        |
 | `aufgaben_scoreboard.complete_task` | Aufgabe als erledigt markieren, Punkte gutschreiben     | Nein¹     |
 | `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen          | ✅        |
+| `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen                       | ✅        |
+| `aufgaben_scoreboard.update_template` | Standardaufgabe nachträglich bearbeiten               | ✅        |
+| `aufgaben_scoreboard.remove_template` | Standardaufgabe löschen                               | ✅        |
+| `aufgaben_scoreboard.create_task_from_template` | Aufgabe(n) aus einer Standardaufgabe anlegen | ✅        |
 
 ¹ Jeder Benutzer darf nur seine eigenen Aufgaben erledigen;
 Administratoren dürfen dies stellvertretend für jeden Benutzer tun.

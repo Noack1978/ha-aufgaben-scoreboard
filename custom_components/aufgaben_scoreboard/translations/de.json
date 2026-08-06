@@ -9,5 +9,16 @@
     "abort": {
       "already_configured": "Diese Integration ist bereits eingerichtet."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Berücksichtigte Benutzer",
+        "description": "Wähle aus, welche Home-Assistant-Benutzer von dieser Integration berücksichtigt werden sollen. Nur ausgewählte Benutzer bekommen einen eigenen Punkte-Sensor und stehen beim Anlegen/Bearbeiten von Aufgaben als zuständige Person zur Auswahl. So lassen sich z. B. technische Benutzer/Integrations-Accounts ausblenden.",
+        "data": {
+          "enabled_users": "Berücksichtigte Benutzer"
+        }
+      }
+    }
   }
 }

@@ -42,9 +42,14 @@ SIGNAL_UPDATE = f"{DOMAIN}_update"
 # -----------------------------------------------------------------------
 
 EVENT_TASK_ADDED = f"{DOMAIN}_task_added"
+EVENT_TASK_UPDATED = f"{DOMAIN}_task_updated"
 EVENT_TASK_COMPLETED = f"{DOMAIN}_task_completed"
 EVENT_TASK_REMOVED = f"{DOMAIN}_task_removed"
 EVENT_TASK_ASSIGNED = f"{DOMAIN}_task_assigned"
+
+EVENT_TEMPLATE_ADDED = f"{DOMAIN}_template_added"
+EVENT_TEMPLATE_UPDATED = f"{DOMAIN}_template_updated"
+EVENT_TEMPLATE_REMOVED = f"{DOMAIN}_template_removed"
 
 # -----------------------------------------------------------------------
 # Service-Namen (aufrufbar z. B. in Automationen/Skripten sowie über die
@@ -52,11 +57,20 @@ EVENT_TASK_ASSIGNED = f"{DOMAIN}_task_assigned"
 # -----------------------------------------------------------------------
 
 SERVICE_ADD_TASK = "add_task"
+SERVICE_UPDATE_TASK = "update_task"
 SERVICE_REMOVE_TASK = "remove_task"
 SERVICE_ASSIGN_TASK = "assign_task"
 SERVICE_UNASSIGN_TASK = "unassign_task"
 SERVICE_COMPLETE_TASK = "complete_task"
 SERVICE_RESET_SCORE = "reset_score"
+
+# Standardaufgaben (Vorlagen): wiederverwendbare Aufgaben-Definitionen,
+# aus denen manuell (Button "Jetzt anlegen") oder automatisch (per
+# Entitäts-Trigger) konkrete Aufgaben erzeugt werden können.
+SERVICE_ADD_TEMPLATE = "add_template"
+SERVICE_UPDATE_TEMPLATE = "update_template"
+SERVICE_REMOVE_TEMPLATE = "remove_template"
+SERVICE_CREATE_TASK_FROM_TEMPLATE = "create_task_from_template"
 
 # -----------------------------------------------------------------------
 # Attribut-/Feld-Schlüssel, die sowohl in Service-Aufrufen als auch in
@@ -69,6 +83,12 @@ ATTR_DESCRIPTION = "description"
 ATTR_SCORE = "score"
 ATTR_USER_ID = "user_id"
 ATTR_ASSIGNED_TO = "assigned_to"
+
+# Standardaufgaben (Vorlagen)
+ATTR_TEMPLATE_ID = "template_id"
+ATTR_MULTISCORING = "multiscoring"
+ATTR_TRIGGER_ENTITY_ID = "trigger_entity_id"
+ATTR_TRIGGER_STATE = "trigger_state"
 
 # -----------------------------------------------------------------------
 # Konstanten für das Frontend (Sidebar-Panel + Custom Card).
@@ -96,3 +116,13 @@ USER_SENSOR_UNIQUE_ID_PREFIX = f"{DOMAIN}_user_"
 # (unabhängig vom Benutzer) als Attribut bereitstellt. Wird u. a. vom
 # Sidebar-Panel für die Admin-/Übersichtsansicht verwendet.
 ALL_TASKS_SENSOR_UNIQUE_ID = f"{DOMAIN}_alle_offenen_aufgaben"
+
+# -----------------------------------------------------------------------
+# Options-Flow: Auswahl, welche Home-Assistant-Benutzer von dieser
+# Integration berücksichtigt werden (eigener Punkte-Sensor + in
+# Zuweisungslisten wählbar). Damit lassen sich z. B. technische
+# Benutzer/Integrations-Accounts, die zwar aktiv aber keine "echten"
+# Haushaltsmitglieder sind, gezielt ausblenden.
+# -----------------------------------------------------------------------
+
+OPTION_ENABLED_USERS = "enabled_users"
