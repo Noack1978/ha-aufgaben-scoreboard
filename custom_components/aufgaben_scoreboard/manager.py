@@ -15,6 +15,7 @@ sauber testbar und getrennt von der eigentlichen Entity-Darstellung.
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -310,6 +311,11 @@ class AufgabenScoreboardManager:
         Liefert alle offenen Aufgaben, die für den angegebenen Benutzer
         sichtbar/erledigbar sind: entweder ihm explizit zugewiesen ODER
         für alle Benutzer freigegeben (assigned_to ist leer).
+
+        WICHTIG: Es werden bewusst KOPIEN der internen Aufgaben-Dicts
+        zurückgegeben (siehe Kommentar bei get_all_tasks()) - sonst
+        entdeckt Home Assistant nachträgliche Bearbeitungen (z. B. über
+        async_update_task) nicht zuverlässig.
         """
         ergebnis = []
         for aufgabe in self._data["tasks"].values():
@@ -317,19 +323,40 @@ class AufgabenScoreboardManager:
                 continue
             zugewiesen = aufgabe["assigned_to"]
             if not zugewiesen or user_id in zugewiesen:
-                ergebnis.append(aufgabe)
+                ergebnis.append(copy.deepcopy(aufgabe))
         return ergebnis
 
     def get_completed_tasks_for_user(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
         """Liefert die letzten erledigten Aufgaben eines Benutzers (neueste zuerst)."""
-        eintraege = [c for c in self._data["completions"] if c["user_id"] == user_id]
+        eintraege = [copy.deepcopy(c) for c in self._data["completions"] if c["user_id"] == user_id]
         eintraege.sort(key=lambda c: c["completed_at"], reverse=True)
         return eintraege[:limit]
 
     def get_all_open_tasks(self) -> list[dict[str, Any]]:
         """Liefert alle offenen Aufgaben (für Übersichts-/Admin-Ansicht)."""
-        return [a for a in self._data["tasks"].values() if a["status"] == "open"]
+        return [copy.deepcopy(a) for a in self._data["tasks"].values() if a["status"] == "open"]
 
     def get_all_tasks(self) -> list[dict[str, Any]]:
-        """Liefert wirklich alle Aufgaben, unabhängig vom Status."""
-        return list(self._data["tasks"].values())
+        """
+        Liefert wirklich alle Aufgaben, unabhängig vom Status.
+
+        WICHTIG - Kopien statt Referenzen:
+        Diese Methode speist u. a. das "alle_aufgaben"-Attribut des
+        Übersichts-Sensors, das Home Assistant bei jedem
+        async_write_ha_state() mit dem zuvor gespeicherten Zustand
+        vergleicht (old_state.attributes == neue_attribute), um zu
+        entscheiden, ob überhaupt ein state_changed-Event gefeuert wird.
+        Aufgaben werden in diesem Manager bewusst IN PLACE verändert
+        (z. B. async_update_task() setzt aufgabe["name"] = ... direkt
+        auf dem bestehenden Dict). Würden hier die Original-Dict-
+        Objekte zurückgegeben, würde eine spätere Bearbeitung
+        rückwirkend auch den bereits an HA übergebenen alten
+        Attribut-Snapshot "mit verändern" (Python hält Dicts per
+        Referenz) - der Gleichheitsvergleich sähe dann fälschlich
+        KEINEN Unterschied, HA würde kein Event feuern, und die
+        Bearbeitung bliebe im Frontend unsichtbar, bis sich zufällig
+        etwas anderes (z. B. die Aufgabenzahl durch add_task) ändert.
+        Mit copy.deepcopy() ist jeder zurückgegebene Snapshot
+        unabhängig von zukünftigen Mutationen der internen Daten.
+        """
+        return [copy.deepcopy(a) for a in self._data["tasks"].values()]
