@@ -88,6 +88,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
   /** Wird von Home Assistant beim Anzeigen des Panels gesetzt. */
   set panel(panel) {
     this._panel = panel;
+    // Nur im Panel-Modus (eigene Seite in der Seitenleiste) gesetzt -
+    // steuert, ob der Menü-Button (☰) im Header angezeigt wird, über
+    // den sich die Seitenleiste ein-/ausblenden lässt (dieselbe Technik
+    // wie bei ha-step-challenge, Music Assistant, Beatify).
+    this._isPanel = true;
   }
 
   /** Zeigt an, ob die Seitenleiste im schmalen (mobilen) Modus ist. */
@@ -154,6 +159,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
   _neueAufgabeAnlegen(formData) {
     this._hass.callService("aufgaben_scoreboard", "add_task", formData);
+  }
+
+  /** Setzt den Punktestand eines Benutzers auf 0 zurück. Nur für Administratoren. */
+  _punktestandZuruecksetzen(userId) {
+    this._hass.callService("aufgaben_scoreboard", "reset_score", { user_id: userId });
   }
 
   /**
@@ -268,6 +278,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
       <style>${this._css()}</style>
       <div class="wrapper">
         <div class="kopf">
+          ${this._isPanel ? `<button class="menu-btn" id="menu-btn" title="Menü">☰</button>` : ""}
           <h1>🏆 Aufgaben-Punktesystem</h1>
         </div>
 
@@ -279,7 +290,19 @@ class AufgabenScoreboardPanel extends HTMLElement {
               (b) => `
               <div class="rang-eintrag ${b.zustand.attributes.user_id === eigeneUserId ? "ich" : ""}">
                 <span class="rang-name">${this._escape(b.zustand.attributes.friendly_name || b.entityId)}</span>
-                <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                <div class="rang-rechts">
+                  <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                  ${
+                    istAdmin
+                      ? `<button
+                          class="btn-secondary reset-punkte-btn"
+                          data-user-id="${b.zustand.attributes.user_id}"
+                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                          title="Punktestand zurücksetzen"
+                        >Zurücksetzen</button>`
+                      : ""
+                  }
+                </div>
               </div>`
             )
             .join("")}
@@ -477,6 +500,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
   _eventListenerRegistrieren(istAdmin, benutzerSensoren) {
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
 
+    const menuBtn = this.shadowRoot.getElementById("menu-btn");
+    if (menuBtn) {
+      menuBtn.addEventListener("click", () => {
+        // Feuert dasselbe HA-Event, über das auch Music Assistant und
+        // Beatify die Seitenleiste ein-/ausblenden.
+        this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true }));
+      });
+    }
+
     this.shadowRoot.querySelectorAll(".eigene-erledigen").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         this._aufgabeErledigen(ev.target.getAttribute("data-task-id"), eigeneUserId);
@@ -484,6 +516,16 @@ class AufgabenScoreboardPanel extends HTMLElement {
     });
 
     if (!istAdmin) return;
+
+    this.shadowRoot.querySelectorAll(".reset-punkte-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const userId = ev.target.getAttribute("data-user-id");
+        const userName = ev.target.getAttribute("data-user-name");
+        if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen?`)) {
+          this._punktestandZuruecksetzen(userId);
+        }
+      });
+    });
 
     const toggleBtn = this.shadowRoot.getElementById("toggle-formular");
     if (toggleBtn) {
@@ -569,10 +611,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
         margin: 0 auto;
         padding: 24px 16px 64px 16px;
       }
+      .kopf {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
       .kopf h1 {
         font-size: 1.6em;
         color: var(--primary-text-color);
         margin: 0 0 20px 0;
+      }
+      .menu-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 1.3em;
+        color: var(--primary-text-color);
+        padding: 4px 8px 24px 0;
+        line-height: 1;
+        flex-shrink: 0;
+        opacity: 0.8;
+      }
+      .menu-btn:hover {
+        opacity: 1;
       }
       h2 {
         font-size: 1.15em;
@@ -591,13 +652,23 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .rang-eintrag {
         display: flex;
         justify-content: space-between;
+        align-items: center;
         padding: 12px 16px;
         border-bottom: 1px solid var(--divider-color, #eee);
         color: var(--primary-text-color);
       }
       .rang-eintrag:last-child { border-bottom: none; }
       .rang-eintrag.ich { background: rgba(var(--rgb-primary-color, 3,169,244), 0.08); font-weight: 600; }
+      .rang-rechts {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
       .rang-punkte { color: var(--primary-color); font-weight: 700; }
+      .reset-punkte-btn {
+        font-size: 0.8em;
+        padding: 4px 10px;
+      }
 
       .hinweis {
         color: var(--secondary-text-color);
