@@ -188,4 +188,5 @@ class AlleOffenenAufgabenSensor(_BasisSensor):
         return {
             "offene_aufgaben": self._manager.get_all_open_tasks(),
             "alle_aufgaben": self._manager.get_all_tasks(),
+            "vorlagen": self._manager.get_all_templates(),
         }

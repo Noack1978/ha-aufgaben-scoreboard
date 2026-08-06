@@ -42,9 +42,13 @@ import homeassistant.helpers.config_validation as cv
 from .const import (
     ATTR_ASSIGNED_TO,
     ATTR_DESCRIPTION,
+    ATTR_MULTISCORING,
     ATTR_NAME,
     ATTR_SCORE,
     ATTR_TASK_ID,
+    ATTR_TEMPLATE_ID,
+    ATTR_TRIGGER_ENTITY_ID,
+    ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
     CARD_JS_FILENAME,
     DOMAIN,
@@ -55,12 +59,16 @@ from .const import (
     PANEL_URL_PATH,
     PLATFORMS,
     SERVICE_ADD_TASK,
+    SERVICE_ADD_TEMPLATE,
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
+    SERVICE_CREATE_TASK_FROM_TEMPLATE,
     SERVICE_REMOVE_TASK,
+    SERVICE_REMOVE_TEMPLATE,
     SERVICE_RESET_SCORE,
     SERVICE_UNASSIGN_TASK,
     SERVICE_UPDATE_TASK,
+    SERVICE_UPDATE_TEMPLATE,
 )
 from .manager import AufgabenScoreboardManager
 
@@ -122,6 +130,47 @@ SCHEMA_COMPLETE_TASK = vol.Schema(
 
 SCHEMA_RESET_SCORE = vol.Schema({vol.Required(ATTR_USER_ID): cv.string})
 
+# -----------------------------------------------------------------------
+# Standardaufgaben (Vorlagen)
+# -----------------------------------------------------------------------
+
+SCHEMA_ADD_TEMPLATE = vol.Schema(
+    {
+        vol.Required(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION, default=""): cv.string,
+        vol.Required(ATTR_SCORE): vol.Coerce(int),
+        vol.Optional(ATTR_ASSIGNED_TO, default=[]): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional(ATTR_MULTISCORING, default=False): cv.boolean,
+        # Leerer String zählt bewusst NICHT als gültige Entity-ID -
+        # "kein Trigger" wird durch schlichtes Weglassen des Feldes
+        # ausgedrückt, nicht durch einen leeren Wert.
+        vol.Optional(ATTR_TRIGGER_ENTITY_ID): cv.entity_id,
+        vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+    }
+)
+
+SCHEMA_UPDATE_TEMPLATE = vol.Schema(
+    {
+        vol.Required(ATTR_TEMPLATE_ID): cv.string,
+        # Alle inhaltlichen Felder sind beim Bearbeiten optional - nur
+        # tatsächlich übergebene Felder werden geändert (siehe
+        # AufgabenScoreboardManager.async_update_template). Für die
+        # beiden Trigger-Felder gilt zusätzlich: ein LEERER String
+        # entfernt den Trigger bewusst (siehe dortige Docstring).
+        vol.Optional(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION): cv.string,
+        vol.Optional(ATTR_SCORE): vol.Coerce(int),
+        vol.Optional(ATTR_ASSIGNED_TO): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional(ATTR_MULTISCORING): cv.boolean,
+        vol.Optional(ATTR_TRIGGER_ENTITY_ID): vol.Any(cv.entity_id, ""),
+        vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+    }
+)
+
+SCHEMA_REMOVE_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
+
+SCHEMA_CREATE_TASK_FROM_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
@@ -145,6 +194,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(f"Aufgaben-Daten konnten nicht geladen werden: {fehler}") from fehler
 
     hass.data[DOMAIN][entry.entry_id] = manager
+
+    # Entitäts-Trigger für Standardaufgaben (falls konfiguriert) jetzt
+    # abonnieren, damit automatische Aufgaben-Anlage direkt nach dem
+    # Start der Integration funktioniert.
+    manager.sync_trigger_listeners()
 
     # ------------------------------------------------------------------
     # 2. Sensor-Plattform laden (ein Sensor pro Benutzer + Übersicht)
@@ -187,7 +241,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Wird beim Entfernen/Neuladen der Integration aufgerufen."""
     entladen_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if entladen_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        manager: AufgabenScoreboardManager = hass.data[DOMAIN].pop(entry.entry_id)
+        # Entitäts-Trigger-Listener der Standardaufgaben sauber abmelden.
+        manager.async_unload()
 
         # Services nur entfernen, wenn keine weiteren Einträge mehr aktiv
         # sind (bei single_config_entry ist das faktisch immer der Fall).
@@ -200,6 +256,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_UNASSIGN_TASK,
                 SERVICE_COMPLETE_TASK,
                 SERVICE_RESET_SCORE,
+                SERVICE_ADD_TEMPLATE,
+                SERVICE_UPDATE_TEMPLATE,
+                SERVICE_REMOVE_TEMPLATE,
+                SERVICE_CREATE_TASK_FROM_TEMPLATE,
             ):
                 hass.services.async_remove(DOMAIN, service)
 
@@ -309,6 +369,49 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             return
         await manager.async_reset_score(call.data[ATTR_USER_ID])
 
+    async def handle_add_template(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Standardaufgabe anzulegen - abgelehnt.")
+            return
+        await manager.async_add_template(
+            name=call.data[ATTR_NAME],
+            description=call.data.get(ATTR_DESCRIPTION, ""),
+            score=call.data[ATTR_SCORE],
+            assigned_to=call.data.get(ATTR_ASSIGNED_TO, []),
+            multiscoring=call.data.get(ATTR_MULTISCORING, False),
+            trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
+            trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+        )
+
+    async def handle_update_template(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Standardaufgabe zu bearbeiten - abgelehnt.")
+            return
+        await manager.async_update_template(
+            template_id=call.data[ATTR_TEMPLATE_ID],
+            name=call.data.get(ATTR_NAME),
+            description=call.data.get(ATTR_DESCRIPTION),
+            score=call.data.get(ATTR_SCORE),
+            assigned_to=call.data.get(ATTR_ASSIGNED_TO),
+            multiscoring=call.data.get(ATTR_MULTISCORING),
+            trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
+            trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+        )
+
+    async def handle_remove_template(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Standardaufgabe zu löschen - abgelehnt.")
+            return
+        await manager.async_remove_template(call.data[ATTR_TEMPLATE_ID])
+
+    async def handle_create_task_from_template(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning(
+                "Nicht-Administrator hat versucht, eine Aufgabe aus einer Standardaufgabe anzulegen - abgelehnt."
+            )
+            return
+        await manager.async_create_task_from_template(call.data[ATTR_TEMPLATE_ID])
+
     hass.services.async_register(DOMAIN, SERVICE_ADD_TASK, handle_add_task, schema=SCHEMA_ADD_TASK)
     hass.services.async_register(DOMAIN, SERVICE_UPDATE_TASK, handle_update_task, schema=SCHEMA_UPDATE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_REMOVE_TASK, handle_remove_task, schema=SCHEMA_REMOVE_TASK)
@@ -316,6 +419,19 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_TASK, handle_complete_task, schema=SCHEMA_COMPLETE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_RESET_SCORE, handle_reset_score, schema=SCHEMA_RESET_SCORE)
+    hass.services.async_register(DOMAIN, SERVICE_ADD_TEMPLATE, handle_add_template, schema=SCHEMA_ADD_TEMPLATE)
+    hass.services.async_register(
+        DOMAIN, SERVICE_UPDATE_TEMPLATE, handle_update_template, schema=SCHEMA_UPDATE_TEMPLATE
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_REMOVE_TEMPLATE, handle_remove_template, schema=SCHEMA_REMOVE_TEMPLATE
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CREATE_TASK_FROM_TEMPLATE,
+        handle_create_task_from_template,
+        schema=SCHEMA_CREATE_TASK_FROM_TEMPLATE,
+    )
 
 
 async def _async_setup_frontend(hass: HomeAssistant) -> None:
