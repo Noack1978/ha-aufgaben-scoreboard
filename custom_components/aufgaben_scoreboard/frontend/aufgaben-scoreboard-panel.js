@@ -361,8 +361,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // ha-selector-Elemente (Entität/Zustand für den Trigger) sind keine
     // im HTML-Template deklarierbaren Standardelemente - sie müssen nach
     // dem Setzen von innerHTML programmatisch erzeugt und eingebaut
-    // werden (siehe _haSelectorenEinbauen()).
-    this._haSelectorenEinbauen(uebersichtsSensor);
+    // werden (siehe _haSelectorenEinbauen()). Der gesicherte
+    // Formular-Zustand wird mitgegeben, damit bereits im laufenden
+    // Formular getroffene (aber noch nicht gespeicherte) Änderungen -
+    // z. B. eine gerade erst ausgewählte oder bewusst gelöschte Entität -
+    // beim Neu-Aufbau nicht durch die alten, gespeicherten Vorlagendaten
+    // überschrieben werden.
+    this._haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand);
 
     this._eventListenerRegistrieren(istAdmin, benutzerSensoren);
 
@@ -703,7 +708,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * irgendeinem Grund nicht verfügbar sein sollte (defensive
    * Absicherung, sollte in der Praxis nicht vorkommen).
    */
-  _haSelectorenEinbauen(uebersichtsSensor) {
+  _haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand) {
     const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
     const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
     if (!entitySlot || !stateSlot) return;
@@ -713,8 +718,30 @@ class AufgabenScoreboardPanel extends HTMLElement {
       ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
       : null;
 
-    const entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
-    const stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
+    // Startwerte: zunächst aus der zuletzt GESPEICHERTEN Vorlage (Server-
+    // Daten) - das ist der richtige Ausgangspunkt beim allerersten Öffnen
+    // des Formulars.
+    let entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
+    let stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
+
+    // WICHTIG: Ist bereits ein Formular-Zustand für GENAU dieses Formular
+    // gesichert (z. B. weil dieses Re-Render durch eine Eingabe im
+    // laufenden Formular selbst ausgelöst wurde - Entität ausgewählt,
+    // Entität wieder gelöscht, ...), hat dieser IMMER Vorrang vor den
+    // alten Server-Daten. Ohne diese Vorrangregel würde z. B. das
+    // Löschen der Entitäts-Auswahl beim direkt folgenden Re-Render sofort
+    // wieder mit dem alten, gespeicherten Wert überschrieben werden - der
+    // Status-Selector würde zudem die Zustände der FALSCHEN (alten)
+    // Entität vorschlagen, statt die der gerade neu gewählten.
+    const aktuellesFormularId = this.shadowRoot.querySelector(".formular-mit-zustand")?.id;
+    if (gesicherterFormularZustand && gesicherterFormularZustand.formularId === aktuellesFormularId) {
+      if ("trigger_entity_id" in gesicherterFormularZustand.werte) {
+        entityWert = gesicherterFormularZustand.werte.trigger_entity_id || "";
+      }
+      if ("trigger_state" in gesicherterFormularZustand.werte) {
+        stateWert = gesicherterFormularZustand.werte.trigger_state || "";
+      }
+    }
 
     const HaSelector = customElements.get("ha-selector");
     if (!HaSelector) {
@@ -734,6 +761,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
     entitySelector.label = "Auslösende Entität";
     entitySelector.selector = { entity: {} };
     entitySelector.value = entityWert || undefined;
+    // WICHTIG: explizit als NICHT erforderlich markieren. Ohne diese
+    // Angabe kann ha-selector das Feld intern als "required" behandeln -
+    // required-Felder zeigen üblicherweise KEIN Lösch-Icon an, obwohl der
+    // Trigger hier ausdrücklich optional ist.
+    entitySelector.required = false;
     entitySelector.dataset.feldName = "trigger_entity_id";
     entitySelector.addEventListener("value-changed", (ev) => {
       ev.stopPropagation();
@@ -756,6 +788,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     stateSelector.label = "Ziel-Zustand";
     stateSelector.selector = { state: { entity_id: entityWert || undefined } };
     stateSelector.value = stateWert || undefined;
+    stateSelector.required = false;
     stateSelector.dataset.feldName = "trigger_state";
     stateSelector.addEventListener("value-changed", (ev) => {
       ev.stopPropagation();
@@ -770,6 +803,24 @@ class AufgabenScoreboardPanel extends HTMLElement {
     entitySlot.appendChild(entitySelector);
     stateSlot.innerHTML = "";
     stateSlot.appendChild(stateSelector);
+
+    // Zusätzlich zu einem eventuellen eingebauten Lösch-Icon des
+    // Selectors: ein eigener, garantiert sichtbarer Button, der BEIDE
+    // Trigger-Felder auf einen Klick leert. So ist das Entfernen nicht
+    // von einer UI-Eigenheit des ha-selector abhängig, die sich zwischen
+    // Home-Assistant-Versionen unterscheiden kann.
+    if (entityWert || stateWert) {
+      const entfernenBtn = document.createElement("button");
+      entfernenBtn.type = "button";
+      entfernenBtn.className = "btn-secondary trigger-entfernen-btn";
+      entfernenBtn.textContent = "Trigger entfernen";
+      entfernenBtn.addEventListener("click", () => {
+        entitySelector.value = undefined;
+        stateSelector.value = undefined;
+        this._render();
+      });
+      stateSlot.appendChild(entfernenBtn);
+    }
   }
 
   _eventListenerRegistrieren(istAdmin, benutzerSensoren) {
@@ -1225,6 +1276,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
         border: 1px solid var(--divider-color, #ccc);
         background: var(--primary-background-color);
         color: var(--primary-text-color);
+      }
+      .trigger-entfernen-btn {
+        align-self: flex-start;
+        margin-top: 2px;
       }
       .vorlage-badges {
         display: flex;
