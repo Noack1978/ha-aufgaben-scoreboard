@@ -374,6 +374,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Gesicherte Formularwerte + Fokus wiederherstellen (falls das
     // Formular offen war und Re-Render trotzdem stattgefunden hat).
     this._stelleFormularZustandWieder(gesicherterFormularZustand);
+
+    // Sichtbarkeit der Zeitplan-Unterfelder (Intervall/Wochentag) an den
+    // ggf. gerade wiederhergestellten Auswahlwert anpassen - siehe
+    // _vorlagenZeitplanUiAktualisieren().
+    this._vorlagenZeitplanUiAktualisieren();
   }
 
   _renderEigeneAufgaben(benutzerSensoren, eigeneUserId) {
@@ -549,6 +554,20 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return treffer ? this._escape(treffer.zustand.attributes.friendly_name || userId) : userId;
   }
 
+  /** Baut eine kurze, lesbare Beschreibung des Zeitplans einer Vorlage für das Badge (z. B. "Alle 2 Wochen am Mittwoch"). */
+  _zeitplanBeschreibung(vorlage) {
+    const wochentagsNamen = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+    const intervall = vorlage.schedule_interval || 1;
+    if (vorlage.schedule_type === "days") {
+      return intervall === 1 ? "Täglich" : `Alle ${intervall} Tage`;
+    }
+    if (vorlage.schedule_type === "weekly") {
+      const wochentag = wochentagsNamen[vorlage.schedule_weekday] || "?";
+      return intervall === 1 ? `Jede Woche am ${wochentag}` : `Alle ${intervall} Wochen am ${wochentag}`;
+    }
+    return "";
+  }
+
   /**
    * Admin-Bereich "Standardaufgaben" (Vorlagen): Liste + Formular zum
    * Anlegen/Bearbeiten. Nutzt bewusst dieselben Formular-Feldnamen wie
@@ -570,6 +589,32 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const formularTitel = bearbeiteteVorlage ? "Standardaufgabe bearbeiten" : "Neue Standardaufgabe anlegen";
     const buttonBeschriftung = bearbeiteteVorlage ? "Änderungen speichern" : "Standardaufgabe anlegen";
     const vorbelegteBenutzer = bearbeiteteVorlage ? bearbeiteteVorlage.assigned_to || [] : [];
+
+    // Zeitplan-Vorbelegung: das Dropdown "schedule_type_ui" ist eine reine
+    // UI-Auswahl mit VIER Optionen ("", "days", "weekly_single",
+    // "weekly_interval"), die beim Absenden auf die ZWEI tatsächlichen
+    // Backend-Werte (schedule_type "days"/"weekly" + schedule_interval)
+    // abgebildet wird - siehe _vorlagenFormularAbsenden().
+    let zeitplanTypUiWert = "";
+    let zeitplanIntervallWert = 1;
+    let zeitplanWochentagWert = 0;
+    if (bearbeiteteVorlage && bearbeiteteVorlage.schedule_type === "days") {
+      zeitplanTypUiWert = "days";
+      zeitplanIntervallWert = bearbeiteteVorlage.schedule_interval || 1;
+    } else if (bearbeiteteVorlage && bearbeiteteVorlage.schedule_type === "weekly") {
+      zeitplanIntervallWert = bearbeiteteVorlage.schedule_interval || 1;
+      zeitplanWochentagWert = bearbeiteteVorlage.schedule_weekday != null ? bearbeiteteVorlage.schedule_weekday : 0;
+      zeitplanTypUiWert = zeitplanIntervallWert > 1 ? "weekly_interval" : "weekly_single";
+    }
+    const zeitplanWochentage = [
+      ["0", "Montag"],
+      ["1", "Dienstag"],
+      ["2", "Mittwoch"],
+      ["3", "Donnerstag"],
+      ["4", "Freitag"],
+      ["5", "Samstag"],
+      ["6", "Sonntag"],
+    ];
 
     return `
       <div class="abschnitt admin-bereich">
@@ -628,13 +673,53 @@ class AufgabenScoreboardPanel extends HTMLElement {
               </span>
             </label>
             <fieldset class="trigger-feld">
-              <legend>Automatische Anlage (optional)</legend>
+              <legend>Automatische Anlage per Entität (optional)</legend>
               <div class="ha-selector-slot" data-feld="trigger_entity_id"></div>
               <div class="ha-selector-slot" data-feld="trigger_state"></div>
               <div class="hinweis-klein">
                 Sobald die gewählte Entität den Ziel-Zustand erreicht, wird
                 automatisch eine Aufgabe aus dieser Vorlage angelegt - sofern
                 nicht bereits eine offene Aufgabe daraus existiert.
+              </div>
+            </fieldset>
+            <fieldset class="zeitplan-feld">
+              <legend>Automatische Anlage per Zeitplan (optional)</legend>
+              <label>
+                Wiederholung
+                <select name="schedule_type_ui" class="zeitplan-typ-auswahl">
+                  <option value="" ${zeitplanTypUiWert === "" ? "selected" : ""}>Kein Zeitplan</option>
+                  <option value="days" ${zeitplanTypUiWert === "days" ? "selected" : ""}>Alle X Tage</option>
+                  <option value="weekly_single" ${
+                    zeitplanTypUiWert === "weekly_single" ? "selected" : ""
+                  }>Jede Woche am Wochentag</option>
+                  <option value="weekly_interval" ${
+                    zeitplanTypUiWert === "weekly_interval" ? "selected" : ""
+                  }>Alle X Wochen am Wochentag</option>
+                </select>
+              </label>
+              <label class="zeitplan-intervall-feld" data-zeitplan-zeile="interval">
+                Alle
+                <input type="number" name="schedule_interval" min="1" value="${zeitplanIntervallWert}" />
+                <span class="zeitplan-einheit-label">${zeitplanTypUiWert === "weekly_interval" ? "Wochen" : "Tage"}</span>
+              </label>
+              <label class="zeitplan-wochentag-feld" data-zeitplan-zeile="weekday">
+                Wochentag
+                <select name="schedule_weekday">
+                  ${zeitplanWochentage
+                    .map(
+                      ([wert, bezeichnung]) =>
+                        `<option value="${wert}" ${
+                          String(zeitplanWochentagWert) === wert ? "selected" : ""
+                        }>${bezeichnung}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+              <div class="hinweis-klein">
+                Erzeugt automatisch eine neue Aufgabe nach dem gewählten
+                Zeitplan - sofern nicht bereits eine offene Aufgabe aus
+                dieser Vorlage existiert. Kann zusätzlich zum
+                Entitäts-Trigger oder unabhängig davon genutzt werden.
               </div>
             </fieldset>
             <div class="formular-aktionen">
@@ -677,6 +762,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
                           )}</span>`
                         : ""
                     }
+                    ${v.schedule_type ? `<span class="vorlage-badge">📅 ${this._escape(this._zeitplanBeschreibung(v))}</span>` : ""}
                   </div>
                 </div>
                 <div class="aufgaben-aktion">
@@ -826,6 +912,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
   _eventListenerRegistrieren(istAdmin, benutzerSensoren) {
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
 
+    const zeitplanTypSelect = this.shadowRoot.querySelector('select[name="schedule_type_ui"]');
+    if (zeitplanTypSelect) {
+      zeitplanTypSelect.addEventListener("change", () => this._vorlagenZeitplanUiAktualisieren());
+    }
+
     const menuBtn = this.shadowRoot.getElementById("menu-btn");
     if (menuBtn) {
       menuBtn.addEventListener("click", () => {
@@ -969,6 +1060,36 @@ class AufgabenScoreboardPanel extends HTMLElement {
     });
   }
 
+  /**
+   * Blendet die Zeitplan-Unterfelder (Intervall-Zeile / Wochentag-Zeile)
+   * je nach aktueller Auswahl im "schedule_type_ui"-Dropdown ein oder
+   * aus und passt das Einheiten-Label ("Tage"/"Wochen") an. Wird sowohl
+   * beim "change"-Event des Dropdowns als auch einmalig nach jedem
+   * _render() aufgerufen (damit die Sichtbarkeit auch nach einem durch
+   * hass-Update ausgelösten Neuaufbau des Formulars korrekt ist).
+   */
+  _vorlagenZeitplanUiAktualisieren() {
+    const typSelect = this.shadowRoot.querySelector('select[name="schedule_type_ui"]');
+    if (!typSelect) return;
+    const formular = typSelect.closest("form");
+    if (!formular) return;
+
+    const wert = typSelect.value;
+    const intervallZeile = formular.querySelector('[data-zeitplan-zeile="interval"]');
+    const wochentagZeile = formular.querySelector('[data-zeitplan-zeile="weekday"]');
+    const einheitLabel = formular.querySelector(".zeitplan-einheit-label");
+
+    if (intervallZeile) {
+      intervallZeile.style.display = wert === "days" || wert === "weekly_interval" ? "" : "none";
+    }
+    if (wochentagZeile) {
+      wochentagZeile.style.display = wert === "weekly_single" || wert === "weekly_interval" ? "" : "none";
+    }
+    if (einheitLabel) {
+      einheitLabel.textContent = wert === "weekly_interval" ? "Wochen" : "Tage";
+    }
+  }
+
   /** Verarbeitet das Absenden des Standardaufgaben-Formulars (Anlegen ODER Bearbeiten). */
   _vorlagenFormularAbsenden(ev, formular) {
     ev.preventDefault();
@@ -982,6 +1103,30 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const triggerEntityId = entityFeld ? entityFeld.value || "" : "";
     const triggerState = stateFeld ? stateFeld.value || "" : "";
 
+    // Zeitplan: die UI-Auswahl (schedule_type_ui, 4 Optionen) auf die
+    // beiden tatsächlichen Backend-Felder abbilden - siehe Kommentar bei
+    // der Vorbelegung in _renderVorlagenBereich().
+    const zeitplanTypUiFeld = formular.querySelector('select[name="schedule_type_ui"]');
+    const zeitplanIntervallFeld = formular.querySelector('input[name="schedule_interval"]');
+    const zeitplanWochentagFeld = formular.querySelector('select[name="schedule_weekday"]');
+    const zeitplanTypUi = zeitplanTypUiFeld ? zeitplanTypUiFeld.value : "";
+
+    let scheduleType = "";
+    let scheduleInterval = null;
+    let scheduleWeekday = null;
+    if (zeitplanTypUi === "days") {
+      scheduleType = "days";
+      scheduleInterval = Math.max(1, Number(zeitplanIntervallFeld ? zeitplanIntervallFeld.value : 1) || 1);
+    } else if (zeitplanTypUi === "weekly_single") {
+      scheduleType = "weekly";
+      scheduleInterval = 1;
+      scheduleWeekday = Number(zeitplanWochentagFeld ? zeitplanWochentagFeld.value : 0);
+    } else if (zeitplanTypUi === "weekly_interval") {
+      scheduleType = "weekly";
+      scheduleInterval = Math.max(1, Number(zeitplanIntervallFeld ? zeitplanIntervallFeld.value : 1) || 1);
+      scheduleWeekday = Number(zeitplanWochentagFeld ? zeitplanWochentagFeld.value : 0);
+    }
+
     const formData = {
       name: daten.get("name"),
       description: daten.get("description") || "",
@@ -992,16 +1137,24 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     if (this._bearbeiteVorlageId) {
       // Beim Bearbeiten IMMER mitsenden - ein leerer Wert entfernt den
-      // Trigger dabei bewusst (siehe async_update_template).
+      // jeweiligen Trigger dabei bewusst (siehe async_update_template).
       formData.trigger_entity_id = triggerEntityId;
       formData.trigger_state = triggerState;
+      formData.schedule_type = scheduleType;
+      if (scheduleType) formData.schedule_interval = scheduleInterval;
+      if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
       this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
     } else {
       // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
-      // leerer String ist keine gültige Entity-ID und würde die
+      // leerer String ist kein gültiger Zeitplan-Typ und würde die
       // Service-Validierung von add_template fehlschlagen lassen.
       if (triggerEntityId) formData.trigger_entity_id = triggerEntityId;
       if (triggerState) formData.trigger_state = triggerState;
+      if (scheduleType) {
+        formData.schedule_type = scheduleType;
+        formData.schedule_interval = scheduleInterval;
+        if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
+      }
       this._vorlageAnlegen(formData);
     }
 
@@ -1280,6 +1433,45 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .trigger-entfernen-btn {
         align-self: flex-start;
         margin-top: 2px;
+      }
+      .zeitplan-feld {
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 6px;
+        padding: 10px 12px 12px;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .zeitplan-feld legend {
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+        padding: 0 4px;
+      }
+      .zeitplan-feld label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+      .zeitplan-intervall-feld {
+        flex-direction: row !important;
+        align-items: center;
+        gap: 8px !important;
+      }
+      .zeitplan-feld select,
+      .zeitplan-feld input[type="number"] {
+        font-family: inherit;
+        font-size: 1em;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--primary-background-color);
+        color: var(--primary-text-color);
+      }
+      .zeitplan-intervall-feld input[type="number"] {
+        width: 70px;
       }
       .vorlage-badges {
         display: flex;
