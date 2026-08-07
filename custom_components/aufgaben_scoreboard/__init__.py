@@ -44,6 +44,9 @@ from .const import (
     ATTR_DESCRIPTION,
     ATTR_MULTISCORING,
     ATTR_NAME,
+    ATTR_SCHEDULE_INTERVAL,
+    ATTR_SCHEDULE_TYPE,
+    ATTR_SCHEDULE_WEEKDAY,
     ATTR_SCORE,
     ATTR_TASK_ID,
     ATTR_TEMPLATE_ID,
@@ -58,6 +61,8 @@ from .const import (
     PANEL_TITLE,
     PANEL_URL_PATH,
     PLATFORMS,
+    SCHEDULE_TYPE_DAYS,
+    SCHEDULE_TYPE_WEEKLY,
     SERVICE_ADD_TASK,
     SERVICE_ADD_TEMPLATE,
     SERVICE_ASSIGN_TASK,
@@ -146,6 +151,12 @@ SCHEMA_ADD_TEMPLATE = vol.Schema(
         # ausgedrückt, nicht durch einen leeren Wert.
         vol.Optional(ATTR_TRIGGER_ENTITY_ID): cv.entity_id,
         vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+        # Zeitplan-Trigger (alle X Tage / jede bzw. alle X Wochen am
+        # Wochentag Y) - optional, unabhängig vom Entitäts-Trigger
+        # nutzbar. schedule_weekday: 0=Montag ... 6=Sonntag.
+        vol.Optional(ATTR_SCHEDULE_TYPE): vol.In([SCHEDULE_TYPE_DAYS, SCHEDULE_TYPE_WEEKLY]),
+        vol.Optional(ATTR_SCHEDULE_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(ATTR_SCHEDULE_WEEKDAY): vol.All(vol.Coerce(int), vol.Range(min=0, max=6)),
     }
 )
 
@@ -155,8 +166,8 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
         # Alle inhaltlichen Felder sind beim Bearbeiten optional - nur
         # tatsächlich übergebene Felder werden geändert (siehe
         # AufgabenScoreboardManager.async_update_template). Für die
-        # beiden Trigger-Felder gilt zusätzlich: ein LEERER String
-        # entfernt den Trigger bewusst (siehe dortige Docstring).
+        # Trigger-Felder gilt zusätzlich: ein LEERER String entfernt den
+        # jeweiligen Trigger bewusst (siehe dortige Docstring).
         vol.Optional(ATTR_NAME): cv.string,
         vol.Optional(ATTR_DESCRIPTION): cv.string,
         vol.Optional(ATTR_SCORE): vol.Coerce(int),
@@ -164,6 +175,9 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
         vol.Optional(ATTR_MULTISCORING): cv.boolean,
         vol.Optional(ATTR_TRIGGER_ENTITY_ID): vol.Any(cv.entity_id, ""),
         vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+        vol.Optional(ATTR_SCHEDULE_TYPE): vol.Any(SCHEDULE_TYPE_DAYS, SCHEDULE_TYPE_WEEKLY, ""),
+        vol.Optional(ATTR_SCHEDULE_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(ATTR_SCHEDULE_WEEKDAY): vol.All(vol.Coerce(int), vol.Range(min=0, max=6)),
     }
 )
 
@@ -199,6 +213,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # abonnieren, damit automatische Aufgaben-Anlage direkt nach dem
     # Start der Integration funktioniert.
     manager.sync_trigger_listeners()
+
+    # Zeitplan-Trigger für Standardaufgaben (alle X Tage / jede bzw.
+    # alle X Wochen am Wochentag Y, falls konfiguriert) jetzt ebenfalls
+    # aktivieren - inkl. einmaliger Nachhol-Prüfung für den aktuellen Tag.
+    manager.async_setup_schedule()
 
     # ------------------------------------------------------------------
     # 2. Sensor-Plattform laden (ein Sensor pro Benutzer + Übersicht)
@@ -400,6 +419,9 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             multiscoring=call.data.get(ATTR_MULTISCORING, False),
             trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
             trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+            schedule_type=call.data.get(ATTR_SCHEDULE_TYPE),
+            schedule_interval=call.data.get(ATTR_SCHEDULE_INTERVAL),
+            schedule_weekday=call.data.get(ATTR_SCHEDULE_WEEKDAY),
         )
 
     async def handle_update_template(call: ServiceCall) -> None:
@@ -415,6 +437,9 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             multiscoring=call.data.get(ATTR_MULTISCORING),
             trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
             trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+            schedule_type=call.data.get(ATTR_SCHEDULE_TYPE),
+            schedule_interval=call.data.get(ATTR_SCHEDULE_INTERVAL),
+            schedule_weekday=call.data.get(ATTR_SCHEDULE_WEEKDAY),
         )
 
     async def handle_remove_template(call: ServiceCall) -> None:

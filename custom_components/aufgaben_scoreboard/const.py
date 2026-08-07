@@ -90,6 +90,16 @@ ATTR_MULTISCORING = "multiscoring"
 ATTR_TRIGGER_ENTITY_ID = "trigger_entity_id"
 ATTR_TRIGGER_STATE = "trigger_state"
 
+# Zeitplan-Trigger für Standardaufgaben (zusätzlich/alternativ zum
+# Entitäts-Trigger): automatische Anlage nach Tages- oder
+# Wochen-Intervall, siehe AufgabenScoreboardManager._schedule_matches_today().
+ATTR_SCHEDULE_TYPE = "schedule_type"
+ATTR_SCHEDULE_INTERVAL = "schedule_interval"
+ATTR_SCHEDULE_WEEKDAY = "schedule_weekday"
+
+SCHEDULE_TYPE_DAYS = "days"
+SCHEDULE_TYPE_WEEKLY = "weekly"
+
 # -----------------------------------------------------------------------
 # Konstanten für das Frontend (Sidebar-Panel + Custom Card).
 # -----------------------------------------------------------------------

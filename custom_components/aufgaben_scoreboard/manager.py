@@ -18,12 +18,13 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
 
 from .const import (
@@ -35,6 +36,8 @@ from .const import (
     EVENT_TEMPLATE_ADDED,
     EVENT_TEMPLATE_REMOVED,
     EVENT_TEMPLATE_UPDATED,
+    SCHEDULE_TYPE_DAYS,
+    SCHEDULE_TYPE_WEEKLY,
     SIGNAL_UPDATE,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -46,6 +49,11 @@ _LOGGER = logging.getLogger(__name__)
 def _jetzt_iso() -> str:
     """Gibt den aktuellen Zeitpunkt als ISO-8601-String (UTC) zurück."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _heute_iso() -> str:
+    """Gibt das aktuelle Datum (in der HA-konfigurierten Zeitzone) als ISO-8601-Datum zurück."""
+    return dt_util.now().date().isoformat()
 
 
 class AufgabenScoreboardManager:
@@ -99,6 +107,21 @@ class AufgabenScoreboardManager:
                     # automatische Anlage, sobald diese Entität den unten
                     # angegebenen Zustand erreicht
                 "trigger_state": "<zielzustand>" oder None,
+                "schedule_type": "days" | "weekly" | None,  # optional:
+                    # automatische Anlage nach Zeitplan (zusätzlich und
+                    # unabhängig vom Entitäts-Trigger nutzbar)
+                "schedule_interval": 1,  # bei "days": alle X Tage;
+                    # bei "weekly": alle X Wochen (1 = jede Woche)
+                "schedule_weekday": 0,  # nur bei "weekly": Wochentag
+                    # (0=Montag ... 6=Sonntag)
+                "schedule_anchor": "2026-01-01",  # Referenzdatum, ab dem
+                    # das Tage-/Wochen-Intervall gezählt wird - wird beim
+                    # Anlegen bzw. bei jeder Änderung der Zeitplan-Konfiguration
+                    # auf "heute" gesetzt
+                "schedule_last_triggered": "2026-01-01" oder None,  # Datum
+                    # der letzten Zeitplan-Anlage - verhindert eine zweite
+                    # Anlage am selben Tag, selbst wenn die zuvor erzeugte
+                    # Aufgabe zwischenzeitlich bereits erledigt wurde
                 "created_at": "...",
             },
             ...
@@ -118,6 +141,9 @@ class AufgabenScoreboardManager:
         # Abmelde-Funktionen der aktuell abonnierten Entitäts-Trigger,
         # nach template_id - siehe sync_trigger_listeners().
         self._trigger_unsub: dict[str, Any] = {}
+        # Abmelde-Funktion des täglichen Zeitplan-Listeners - siehe
+        # async_setup_schedule().
+        self._schedule_unsub: Any = None
 
     # ------------------------------------------------------------------
     # Laden / Speichern
@@ -142,6 +168,19 @@ class AufgabenScoreboardManager:
         # Frontend überall konsistent sind.
         for aufgabe in self._data["tasks"].values():
             aufgabe.setdefault("template_id", None)
+
+        # Abwärtskompatibilität: Standardaufgaben, die vor Einführung des
+        # Zeitplan-Triggers angelegt wurden, haben die neuen Felder noch
+        # nicht - ohne Nachtrag würde _schedule_matches_today() bei jedem
+        # Zugriff auf .get() zwar None liefern (und korrekt "kein
+        # Zeitplan" ergeben), aber get_all_templates() im Frontend würde
+        # inkonsistente Dicts liefern (mal mit, mal ohne diese Schlüssel).
+        for vorlage in self._data["templates"].values():
+            vorlage.setdefault("schedule_type", None)
+            vorlage.setdefault("schedule_interval", None)
+            vorlage.setdefault("schedule_weekday", None)
+            vorlage.setdefault("schedule_anchor", None)
+            vorlage.setdefault("schedule_last_triggered", None)
 
         _LOGGER.debug(
             "Aufgaben-Scoreboard-Daten geladen: %s Aufgabe(n), %s Standardaufgabe(n)",
@@ -361,6 +400,9 @@ class AufgabenScoreboardManager:
         multiscoring: bool = False,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        schedule_type: str | None = None,
+        schedule_interval: int | None = None,
+        schedule_weekday: int | None = None,
     ) -> str:
         """
         Legt eine neue Standardaufgabe (Vorlage) an.
@@ -370,9 +412,17 @@ class AufgabenScoreboardManager:
             erledigbare Aufgabe statt einer gemeinsamen.
         :param trigger_entity_id: Optionale Entität, bei deren Erreichen
             von trigger_state automatisch eine Aufgabe erzeugt wird.
+        :param schedule_type: Optionaler Zeitplan-Trigger ("days" oder
+            "weekly") - unabhängig vom Entitäts-Trigger nutzbar, auch
+            gleichzeitig mit ihm.
+        :param schedule_interval: Bei "days": alle X Tage. Bei "weekly":
+            alle X Wochen (1 = jede Woche). Ohne Angabe: 1.
+        :param schedule_weekday: Nur bei "weekly" erforderlich: Wochentag
+            (0=Montag ... 6=Sonntag).
         :return: Die generierte Vorlagen-ID.
         """
         template_id = uuid.uuid4().hex
+        schedule_type = schedule_type or None
         self._data["templates"][template_id] = {
             "id": template_id,
             "name": name,
@@ -382,6 +432,13 @@ class AufgabenScoreboardManager:
             "multiscoring": bool(multiscoring),
             "trigger_entity_id": trigger_entity_id or None,
             "trigger_state": trigger_state or None,
+            "schedule_type": schedule_type,
+            "schedule_interval": (int(schedule_interval) if schedule_interval else 1) if schedule_type else None,
+            "schedule_weekday": (int(schedule_weekday) if schedule_weekday is not None else None)
+            if schedule_type
+            else None,
+            "schedule_anchor": _heute_iso() if schedule_type else None,
+            "schedule_last_triggered": None,
             "created_at": _jetzt_iso(),
         }
         await self._async_persist()
@@ -390,6 +447,11 @@ class AufgabenScoreboardManager:
         )
         _LOGGER.info("Neue Standardaufgabe angelegt: '%s'", name)
         self.sync_trigger_listeners()
+        if schedule_type:
+            # Falls der neue Zeitplan bereits auf "heute" zutrifft, soll
+            # die erste Aufgabe sofort entstehen statt erst morgen früh
+            # auf die tägliche Prüfung zu warten.
+            await self._async_schedule_check()
         return template_id
 
     async def async_update_template(
@@ -402,13 +464,16 @@ class AufgabenScoreboardManager:
         multiscoring: bool | None = None,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        schedule_type: str | None = None,
+        schedule_interval: int | None = None,
+        schedule_weekday: int | None = None,
     ) -> bool:
         """
         Bearbeitet eine bestehende Standardaufgabe nachträglich. Nur die
         tatsächlich übergebenen Felder werden geändert (gleiches Muster
-        wie async_update_task). Für trigger_entity_id/trigger_state gilt:
-        ein LEERER String entfernt den Trigger bewusst, KEINE Angabe
-        (None) lässt ihn unangetastet.
+        wie async_update_task). Für trigger_entity_id/trigger_state sowie
+        schedule_type gilt: ein LEERER String entfernt den jeweiligen
+        Trigger bewusst, KEINE Angabe (None) lässt ihn unangetastet.
 
         :return: True bei Erfolg, False falls die Vorlage nicht existiert.
         """
@@ -432,10 +497,46 @@ class AufgabenScoreboardManager:
         if trigger_state is not None:
             vorlage["trigger_state"] = trigger_state or None
 
+        if schedule_type is not None:
+            if schedule_type == "":
+                # Zeitplan bewusst entfernen.
+                vorlage["schedule_type"] = None
+                vorlage["schedule_interval"] = None
+                vorlage["schedule_weekday"] = None
+                vorlage["schedule_anchor"] = None
+                vorlage["schedule_last_triggered"] = None
+            else:
+                neuer_interval = (
+                    int(schedule_interval)
+                    if schedule_interval is not None
+                    else (vorlage.get("schedule_interval") or 1)
+                )
+                neuer_weekday = (
+                    int(schedule_weekday) if schedule_weekday is not None else vorlage.get("schedule_weekday")
+                )
+                konfig_geaendert = (
+                    vorlage.get("schedule_type") != schedule_type
+                    or vorlage.get("schedule_interval") != neuer_interval
+                    or vorlage.get("schedule_weekday") != neuer_weekday
+                )
+                vorlage["schedule_type"] = schedule_type
+                vorlage["schedule_interval"] = neuer_interval
+                vorlage["schedule_weekday"] = neuer_weekday
+                if konfig_geaendert:
+                    # Die Tage-/Wochen-Zählung beginnt bei geänderter
+                    # Konfiguration bewusst wieder ab heute - eine alte
+                    # Zähl-Referenz aus einer anderen Konfiguration wäre
+                    # sonst irreführend (z. B. nach Wechsel von "alle 2
+                    # Tage" auf "alle 3 Tage").
+                    vorlage["schedule_anchor"] = _heute_iso()
+                    vorlage["schedule_last_triggered"] = None
+
         await self._async_persist()
         self.hass.add_job(self.hass.bus.async_fire, EVENT_TEMPLATE_UPDATED, {"template_id": template_id})
         _LOGGER.info("Standardaufgabe '%s' wurde bearbeitet.", vorlage.get("name"))
         self.sync_trigger_listeners()
+        if vorlage.get("schedule_type"):
+            await self._async_schedule_check()
         return True
 
     async def async_remove_template(self, template_id: str) -> None:
@@ -582,11 +683,121 @@ class AufgabenScoreboardManager:
             return
         await self.async_create_task_from_template(template_id)
 
+    # ------------------------------------------------------------------
+    # Zeitplan-Trigger (alle X Tage / jede bzw. alle X Wochen am
+    # Wochentag Y) - unabhängig vom Entitäts-Trigger nutzbar, auch
+    # gleichzeitig mit ihm.
+    # ------------------------------------------------------------------
+
+    @callback
+    def async_setup_schedule(self) -> None:
+        """
+        Registriert die tägliche Zeitplan-Prüfung (einmal um 00:05 Uhr
+        Server-Zeit). Wird einmalig beim Start der Integration aus
+        __init__.py aufgerufen, direkt nach async_load().
+
+        Zusätzlich wird sofort eine einmalige Nachhol-Prüfung angestoßen:
+        War Home Assistant um 00:05 Uhr nicht aktiv (z. B. Neustart am
+        Morgen), würde ohne diese Nachhol-Prüfung ein fälliger Zeitplan
+        erst am nächsten Tag bemerkt.
+        """
+        if self._schedule_unsub is not None:
+            return
+        self._schedule_unsub = async_track_time_change(
+            self.hass, self._schedule_time_callback, hour=0, minute=5, second=0
+        )
+        self.hass.async_create_task(self._async_schedule_check())
+
+    @callback
+    def _schedule_time_callback(self, jetzt) -> None:
+        """Callback von async_track_time_change - stößt die eigentliche (async) Prüfung an."""
+        self.hass.async_create_task(self._async_schedule_check(jetzt))
+
+    async def _async_schedule_check(self, jetzt=None) -> None:
+        """
+        Prüft für alle Standardaufgaben mit konfiguriertem Zeitplan, ob
+        heute ein fälliger Tag ist, und legt bei Bedarf (Duplikat-Schutz-
+        geprüft) eine neue Aufgabe an.
+
+        Zwei voneinander unabhängige Schutzmechanismen verhindern
+        doppelte Anlage:
+          1. schedule_last_triggered == heute: verhindert eine zweite
+             Anlage am selben Tag, selbst wenn die zuvor erzeugte
+             Aufgabe zwischenzeitlich bereits erledigt wurde (die
+             "offene Aufgabe existiert bereits"-Prüfung allein würde das
+             nicht abdecken).
+          2. _template_has_open_tasks(): das bestehende, vom
+             Entitäts-Trigger bekannte Duplikat-Schutz-Muster - keine
+             neue Aufgabe, solange aus dieser Vorlage noch eine offene
+             existiert.
+        """
+        heute = (jetzt or dt_util.now()).date()
+        heute_iso = heute.isoformat()
+
+        for vorlage in list(self._data["templates"].values()):
+            if not vorlage.get("schedule_type"):
+                continue
+            if vorlage.get("schedule_last_triggered") == heute_iso:
+                continue
+            if not self._schedule_matches_today(vorlage, heute):
+                continue
+            if self._template_has_open_tasks(vorlage["id"]):
+                continue
+
+            vorlage["schedule_last_triggered"] = heute_iso
+            await self._async_persist()
+            _LOGGER.info(
+                "Zeitplan-Trigger für Standardaufgabe '%s' ist heute fällig - lege Aufgabe an.",
+                vorlage.get("name"),
+            )
+            await self.async_create_task_from_template(vorlage["id"])
+
+    @staticmethod
+    def _schedule_matches_today(vorlage: dict[str, Any], heute: date) -> bool:
+        """
+        Prüft, ob der Zeitplan einer Vorlage auf das übergebene Datum
+        zutrifft.
+
+        - "days": zutreffend, wenn die Anzahl Tage seit schedule_anchor
+          ein ganzzahliges Vielfaches von schedule_interval ist.
+        - "weekly": zutreffend, wenn heute der konfigurierte Wochentag
+          ist UND die Anzahl KALENDERWOCHEN seit der Woche von
+          schedule_anchor ein ganzzahliges Vielfaches von
+          schedule_interval ist (schedule_interval=1 entspricht damit
+          "jede Woche").
+        """
+        schedule_type = vorlage.get("schedule_type")
+        if not schedule_type:
+            return False
+
+        intervall = max(1, int(vorlage.get("schedule_interval") or 1))
+        anchor_str = vorlage.get("schedule_anchor")
+        anchor = date.fromisoformat(anchor_str) if anchor_str else heute
+        if heute < anchor:
+            return False
+
+        if schedule_type == SCHEDULE_TYPE_DAYS:
+            return (heute - anchor).days % intervall == 0
+
+        if schedule_type == SCHEDULE_TYPE_WEEKLY:
+            ziel_wochentag = vorlage.get("schedule_weekday")
+            if ziel_wochentag is None or heute.weekday() != int(ziel_wochentag):
+                return False
+            anchor_montag = anchor - timedelta(days=anchor.weekday())
+            heute_montag = heute - timedelta(days=heute.weekday())
+            wochen_diff = (heute_montag - anchor_montag).days // 7
+            return wochen_diff % intervall == 0
+
+        return False
+
     def async_unload(self) -> None:
-        """Meldet alle Entitäts-Trigger-Listener ab (beim Entladen/Neuladen der Integration)."""
+        """Meldet alle Entitäts- und Zeitplan-Trigger-Listener ab (beim Entladen/Neuladen der Integration)."""
         for abmelden in self._trigger_unsub.values():
             abmelden()
         self._trigger_unsub.clear()
+        if self._schedule_unsub is not None:
+            self._schedule_unsub()
+            self._schedule_unsub = None
 
     # ------------------------------------------------------------------
     # Lesezugriffe (werden u. a. von den Sensor-Entitäten verwendet)
