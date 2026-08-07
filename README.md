@@ -19,8 +19,14 @@ Benutzern zugewiesen werden.
 - **Custom Card** (`custom:aufgaben-scoreboard-card`), die in jedem
   beliebigen Dashboard platziert werden kann und die eigenen offenen
   Aufgaben samt "Erledigt"-Button zeigt
-- **Services** für Automationen/Skripte: `add_task`, `remove_task`,
-  `assign_task`, `unassign_task`, `complete_task`, `reset_score`
+- **Standardaufgaben (Vorlagen)** für wiederkehrende Aufgaben, inkl.
+  **Multiscoring** (eigene Aufgabe pro zugewiesenem Benutzer) sowie
+  automatischer Anlage per **Entitäts-Trigger** und/oder **Zeitplan**
+  (alle X Tage oder wöchentlich an einem festen Wochentag)
+- **Services** für Automationen/Skripte: `add_task`, `update_task`,
+  `remove_task`, `assign_task`, `unassign_task`, `complete_task`,
+  `reset_score`, `add_template`, `update_template`, `remove_template`,
+  `create_task_from_template`
 - Daten werden lokal in der Home-Assistant-Storage gespeichert – keine
   Cloud, keine externen Abhängigkeiten
 
@@ -102,12 +108,26 @@ einmalig fest; konkrete, erledigbare Aufgaben lassen sich daraus
 beliebig oft erzeugen:
 
 - **Manuell**: Button „Jetzt anlegen“ bei der jeweiligen Standardaufgabe.
-- **Automatisch**: über einen optionalen Entitäts-Trigger (Auswahl von
-  Entität + Ziel-Zustand direkt im Formular, mit derselben
-  Entitäts-/Zustands-Auswahl wie im Automationen-Editor). Sobald die
-  gewählte Entität den Zielwert erreicht, wird automatisch eine Aufgabe
-  angelegt – aber nur, wenn nicht bereits eine offene Aufgabe aus
-  derselben Vorlage existiert (Duplikat-Schutz).
+- **Automatisch per Entitäts-Trigger**: über eine optionale Entität +
+  Ziel-Zustand direkt im Formular (mit derselben Entitäts-/
+  Zustands-Auswahl wie im Automationen-Editor). Sobald die gewählte
+  Entität den Zielwert erreicht, wird automatisch eine Aufgabe angelegt
+  – aber nur, wenn nicht bereits eine offene Aufgabe aus derselben
+  Vorlage existiert (Duplikat-Schutz).
+- **Automatisch per Zeitplan**: unabhängig vom Entitäts-Trigger (auch
+  gleichzeitig mit ihm nutzbar) lässt sich eine Standardaufgabe so
+  konfigurieren, dass sie
+  - **alle X Tage** (z. B. alle 3 Tage), oder
+  - **wöchentlich an einem festen Wochentag** (jede Woche oder alle X
+    Wochen)
+
+  automatisch eine neue Aufgabe erzeugt. Die Prüfung läuft täglich um
+  00:05 Uhr sowie einmalig direkt beim Start von Home Assistant (damit
+  ein fälliger Tag nicht übersehen wird, falls HA um 00:05 Uhr gerade
+  nicht lief). Doppelte Anlage wird zweifach verhindert: zum einen darf
+  am selben Tag nur einmal ausgelöst werden, zum anderen greift –
+  genau wie beim Entitäts-Trigger – der Schutz, dass keine neue Aufgabe
+  entsteht, solange aus derselben Vorlage noch eine offene existiert.
 
 **Multiscoring**: Ist diese Option bei einer Standardaufgabe aktiviert,
 entsteht beim Anlegen für **jeden zugewiesenen Benutzer eine eigene,
@@ -156,7 +176,7 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.unassign_task` | Zuweisung eines Benutzers entfernen                    | ✅        |
 | `aufgaben_scoreboard.complete_task` | Aufgabe als erledigt markieren, Punkte gutschreiben     | Nein¹     |
 | `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen          | ✅        |
-| `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen                       | ✅        |
+| `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen, optional mit Entitäts- und/oder Zeitplan-Trigger | ✅        |
 | `aufgaben_scoreboard.update_template` | Standardaufgabe nachträglich bearbeiten               | ✅        |
 | `aufgaben_scoreboard.remove_template` | Standardaufgabe löschen                               | ✅        |
 | `aufgaben_scoreboard.create_task_from_template` | Aufgabe(n) aus einer Standardaufgabe anlegen | ✅        |
