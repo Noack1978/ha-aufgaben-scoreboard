@@ -13,11 +13,19 @@ Aufgaben dieser Datei:
        weiterleiten (siehe sensor.py).
     3. Die Home-Assistant-Services registrieren (add_task, remove_task,
        assign_task, unassign_task, complete_task, reset_score), damit
-       diese in Automationen/Skripten UND von der Custom Card / dem
-       Sidebar-Panel aus aufgerufen werden können.
-    4. Die statischen Frontend-Dateien (Custom Card + Sidebar-Panel als
-       JavaScript-Module) unter einer festen URL bereitstellen und das
-       Sidebar-Panel bei Home Assistant registrieren.
+       diese in Automationen/Skripten UND vom Sidebar-Panel aus
+       aufgerufen werden können.
+    4. Die statische Frontend-Datei (Sidebar-Panel als JavaScript-Modul)
+       unter einer festen URL bereitstellen und das Sidebar-Panel bei
+       Home Assistant registrieren.
+
+    Hinweis: Eine separate Dashboard-Karte ("Custom Card") gab es bis
+    Version 1.3.0, wurde aber wieder entfernt - sie geriet in
+    Kombination mit browser_mod's "scoped custom element registry" in
+    Konflikt mit Home Assistants Kartenauswahl-Dialog (siehe
+    https://github.com/thomasloven/hass-browser_mod/issues/1056). Die
+    komplette Aufgabenverwaltung (inkl. "Meine Aufgaben") steht
+    weiterhin über das Sidebar-Panel zur Verfügung.
 """
 
 from __future__ import annotations
@@ -30,7 +38,6 @@ import voluptuous as vol
 from homeassistant.components.frontend import (
     async_register_built_in_panel,
     async_remove_panel,
-    add_extra_js_url,
 )
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
@@ -53,7 +60,6 @@ from .const import (
     ATTR_TRIGGER_ENTITY_ID,
     ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
-    CARD_JS_FILENAME,
     DOMAIN,
     FRONTEND_URL_BASE,
     PANEL_ICON,
