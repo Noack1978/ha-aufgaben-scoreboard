@@ -35,7 +35,7 @@ from homeassistant.components.frontend import (
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import CoreState, HomeAssistant, ServiceCall
+from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
 
@@ -227,12 +227,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if hass.state is CoreState.running:
         await _async_setup_frontend(hass)
     else:
+        # WICHTIG: hass.bus.async_listen_once() liefert einen Listener,
+        # der sich nach dem Feuern SELBST aus dem Event-Bus entfernt.
+        # Würde man das dabei zurückgegebene Unsub trotzdem noch unverändert
+        # an entry.async_on_unload() weiterreichen, versucht Home Assistant
+        # beim nächsten Entladen/Neuladen der Integration (falls das NACH
+        # dem HA-Start passiert), denselben - inzwischen bereits selbst
+        # entfernten - Listener ein zweites Mal zu entfernen. Das führt zu
+        # "Unable to remove unknown job listener" (ValueError) im Log.
+        # Daher: merken, ob der Listener schon gefeuert hat, und das
+        # Unsub beim Entladen nur dann noch aufrufen, wenn nicht.
+        listener_hat_gefeuert = False
+
         async def _async_setup_frontend_on_start(_event) -> None:
+            nonlocal listener_hat_gefeuert
+            listener_hat_gefeuert = True
             await _async_setup_frontend(hass)
 
-        entry.async_on_unload(
-            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_setup_frontend_on_start)
-        )
+        unsub_listener = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_setup_frontend_on_start)
+
+        @callback
+        def _async_listener_sicher_abmelden() -> None:
+            if not listener_hat_gefeuert:
+                unsub_listener()
+
+        entry.async_on_unload(_async_listener_sicher_abmelden)
 
     return True
 
