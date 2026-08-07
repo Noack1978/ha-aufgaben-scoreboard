@@ -478,18 +478,44 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
 
     # Statischen Pfad registrieren: alles unter /aufgaben_scoreboard_frontend/
     # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert.
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                FRONTEND_URL_BASE,
-                str(FRONTEND_DIR),
-                cache_headers=False,
-            )
-        ]
-    )
+    #
+    # WICHTIG: Wird die Integration neu geladen, OHNE dass Home Assistant
+    # komplett neu gestartet wurde, kann aiohttp beim erneuten
+    # Registrieren desselben Pfads mit einem RuntimeError ("Added route
+    # will never be executed, method GET is already registered")
+    # abbrechen - es gibt für den statischen Pfad (anders als beim Panel,
+    # siehe async_remove_panel() in async_unload_entry) kein Gegenstück
+    # zum Abmelden. Derselbe Fehler trat bereits konkret bei
+    # ha-parcel-tracking (behoben in v1.0.4) und ha-step-challenge auf;
+    # der Fix dort - gezielt NUR RuntimeError abfangen - wird hier 1:1
+    # übernommen, damit dieser eine, bekannte Fall den Rest der
+    # Frontend-Registrierung (Custom Card, Panel) nicht blockiert.
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    FRONTEND_URL_BASE,
+                    str(FRONTEND_DIR),
+                    cache_headers=False,
+                )
+            ]
+        )
+        _LOGGER.debug("Statischer Frontend-Pfad registriert: %s", FRONTEND_URL_BASE)
+    except RuntimeError:
+        _LOGGER.debug(
+            "Statischer Frontend-Pfad '%s' war bereits registriert (normal bei "
+            "einem Neuladen der Integration ohne Home-Assistant-Neustart).",
+            FRONTEND_URL_BASE,
+        )
 
     # Custom Card global für alle Dashboards verfügbar machen.
-    add_extra_js_url(hass, f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}")
+    card_url = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
+    add_extra_js_url(hass, card_url)
+    _LOGGER.info(
+        "Aufgaben-Scoreboard: Custom Card unter %s registriert (Direktaufruf zum "
+        "Testen im Browser möglich).",
+        card_url,
+    )
 
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
     # dass Home Assistant das angegebene JavaScript-Modul als eigenes
@@ -516,3 +542,4 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
         },
         require_admin=False,
     )
+    _LOGGER.info("Aufgaben-Scoreboard: Sidebar-Panel unter '/%s' registriert.", PANEL_URL_PATH)
