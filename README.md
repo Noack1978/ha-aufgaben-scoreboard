@@ -184,6 +184,35 @@ Personen → Benutzer**.
 ¹ Jeder Benutzer darf nur seine eigenen Aufgaben erledigen;
 Administratoren dürfen dies stellvertretend für jeden Benutzer tun.
 
+## ⚠️ Bekanntes Problem: Custom Card verschwindet aus der Kartenauswahl (browser_mod)
+
+Wenn parallel die Integration [`browser_mod`](https://github.com/thomasloven/hass-browser_mod)
+installiert ist, kann die Custom Card in der „Zum Dashboard
+hinzufügen"-Auswahl mit einem endlosen Ladekreis hängen bleiben bzw.
+danach nicht mehr auffindbar sein, bis das Dashboard hart neu geladen
+wird. Betroffen kann dabei jede beliebige Custom Card sein, nicht nur
+diese Integration.
+
+**Ursache ist ein bestätigter Fehler in `browser_mod` selbst** (nicht in
+dieser Integration): Dessen Polyfill für „scoped custom element
+registries" bringt Home Assistants eigene Kartenauswahl beim Erzeugen
+einer Fehleranzeige durcheinander
+(`TypeError: Illegal constructor ...`, siehe
+[hass-browser_mod#1056](https://github.com/thomasloven/hass-browser_mod/issues/1056)).
+Die Registrierung dieser Integration selbst ist davon nicht betroffen –
+im Log erscheinen bei erfolgreichem Start weiterhin diese Zeilen:
+
+```
+INFO ... Aufgaben-Scoreboard: Custom Card unter .../aufgaben-scoreboard-card.js registriert ...
+INFO ... Aufgaben-Scoreboard: Sidebar-Panel unter '/aufgaben-scoreboard' registriert.
+```
+
+**Workaround:** Dashboard-Seite hart neu laden (nicht nur die
+Integration neu laden), oder testweise `browser_mod` kurzzeitig
+deaktivieren, um zu bestätigen, dass es sich um dieses bekannte Problem
+handelt. Ein Fix müsste in `browser_mod` selbst erfolgen; der oben
+verlinkte Issue kann zur Verfolgung des Status beobachtet werden.
+
 ## 🗂️ Datenspeicherung
 
 Alle Aufgaben, Zuweisungen, Punktestände und der Erledigungsverlauf
