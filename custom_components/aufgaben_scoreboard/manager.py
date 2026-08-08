@@ -18,26 +18,38 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    EVENT_COMPLETION_UNDONE,
     EVENT_TASK_ADDED,
+    EVENT_TASK_APPROVED,
     EVENT_TASK_ASSIGNED,
     EVENT_TASK_COMPLETED,
+    EVENT_TASK_COMPLETION_REQUESTED,
+    EVENT_TASK_REJECTED,
     EVENT_TASK_REMOVED,
     EVENT_TASK_UPDATED,
     EVENT_TEMPLATE_ADDED,
     EVENT_TEMPLATE_REMOVED,
     EVENT_TEMPLATE_UPDATED,
+    SCHEDULE_TYPE_DAYS,
+    SCHEDULE_TYPE_WEEKLY,
     SIGNAL_UPDATE,
     STORAGE_KEY,
     STORAGE_VERSION,
+    TASK_STATUS_DONE,
+    TASK_STATUS_OPEN,
+    TASK_STATUS_PENDING_APPROVAL,
+    UNDO_ANZAHL_LIMIT,
+    UNDO_ZEITLIMIT_TAGE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,6 +58,11 @@ _LOGGER = logging.getLogger(__name__)
 def _jetzt_iso() -> str:
     """Gibt den aktuellen Zeitpunkt als ISO-8601-String (UTC) zurück."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _heute_iso() -> str:
+    """Gibt das aktuelle Datum (in der HA-konfigurierten Zeitzone) als ISO-8601-Datum zurück."""
+    return dt_util.now().date().isoformat()
 
 
 class AufgabenScoreboardManager:
@@ -99,6 +116,21 @@ class AufgabenScoreboardManager:
                     # automatische Anlage, sobald diese Entität den unten
                     # angegebenen Zustand erreicht
                 "trigger_state": "<zielzustand>" oder None,
+                "schedule_type": "days" | "weekly" | None,  # optional:
+                    # automatische Anlage nach Zeitplan (zusätzlich und
+                    # unabhängig vom Entitäts-Trigger nutzbar)
+                "schedule_interval": 1,  # bei "days": alle X Tage;
+                    # bei "weekly": alle X Wochen (1 = jede Woche)
+                "schedule_weekday": 0,  # nur bei "weekly": Wochentag
+                    # (0=Montag ... 6=Sonntag)
+                "schedule_anchor": "2026-01-01",  # Referenzdatum, ab dem
+                    # das Tage-/Wochen-Intervall gezählt wird - wird beim
+                    # Anlegen bzw. bei jeder Änderung der Zeitplan-Konfiguration
+                    # auf "heute" gesetzt
+                "schedule_last_triggered": "2026-01-01" oder None,  # Datum
+                    # der letzten Zeitplan-Anlage - verhindert eine zweite
+                    # Anlage am selben Tag, selbst wenn die zuvor erzeugte
+                    # Aufgabe zwischenzeitlich bereits erledigt wurde
                 "created_at": "...",
             },
             ...
@@ -118,6 +150,9 @@ class AufgabenScoreboardManager:
         # Abmelde-Funktionen der aktuell abonnierten Entitäts-Trigger,
         # nach template_id - siehe sync_trigger_listeners().
         self._trigger_unsub: dict[str, Any] = {}
+        # Abmelde-Funktion des täglichen Zeitplan-Listeners - siehe
+        # async_setup_schedule().
+        self._schedule_unsub: Any = None
 
     # ------------------------------------------------------------------
     # Laden / Speichern
@@ -142,6 +177,32 @@ class AufgabenScoreboardManager:
         # Frontend überall konsistent sind.
         for aufgabe in self._data["tasks"].values():
             aufgabe.setdefault("template_id", None)
+            # Abwärtskompatibilität: Aufgaben aus Versionen vor dem
+            # Freigabe-Workflow kennen "pending_by"/"pending_since" noch
+            # nicht - sie sind ja ohnehin nur im Status "pending_approval"
+            # relevant, den es vorher gar nicht gab.
+            aufgabe.setdefault("pending_by", None)
+            aufgabe.setdefault("pending_since", None)
+
+        # Abwärtskompatibilität: Erledigungs-Einträge aus Versionen vor
+        # der nachträglichen Rücknahme-Funktion haben noch keine
+        # eindeutige "completion_id" - ohne die könnte async_undo_completion()
+        # den betreffenden Eintrag nicht sicher identifizieren.
+        for eintrag in self._data["completions"]:
+            eintrag.setdefault("completion_id", uuid.uuid4().hex)
+
+        # Abwärtskompatibilität: Standardaufgaben, die vor Einführung des
+        # Zeitplan-Triggers angelegt wurden, haben die neuen Felder noch
+        # nicht - ohne Nachtrag würde _schedule_matches_today() bei jedem
+        # Zugriff auf .get() zwar None liefern (und korrekt "kein
+        # Zeitplan" ergeben), aber get_all_templates() im Frontend würde
+        # inkonsistente Dicts liefern (mal mit, mal ohne diese Schlüssel).
+        for vorlage in self._data["templates"].values():
+            vorlage.setdefault("schedule_type", None)
+            vorlage.setdefault("schedule_interval", None)
+            vorlage.setdefault("schedule_weekday", None)
+            vorlage.setdefault("schedule_anchor", None)
+            vorlage.setdefault("schedule_last_triggered", None)
 
         _LOGGER.debug(
             "Aufgaben-Scoreboard-Daten geladen: %s Aufgabe(n), %s Standardaufgabe(n)",
@@ -204,8 +265,12 @@ class AufgabenScoreboardManager:
             "score": int(score),
             "assigned_to": list(assigned_to) if assigned_to else [],
             "created_at": _jetzt_iso(),
-            "status": "open",
+            "status": TASK_STATUS_OPEN,
             "template_id": template_id,
+            # Freigabe-Workflow: wer die Aufgabe als erledigt gemeldet hat
+            # und wann - nur gesetzt, solange status == "pending_approval".
+            "pending_by": None,
+            "pending_since": None,
         }
         await self._async_persist()
 
@@ -296,30 +361,81 @@ class AufgabenScoreboardManager:
 
     async def async_complete_task(self, task_id: str, user_id: str) -> bool:
         """
-        Markiert eine Aufgabe als erledigt und schreibt dem Benutzer die
-        Punkte gut.
+        Meldet eine Aufgabe als erledigt - schreibt dabei NOCH KEINE
+        Punkte gut, sondern setzt sie nur in den Zwischenstatus
+        "pending_approval" (wartet auf Freigabe durch einen
+        Administrator). Erst async_approve_task() vergibt tatsächlich
+        Punkte. Das gilt einheitlich für alle Benutzer, auch für
+        Administratoren, die selbst eine Aufgabe erledigen.
 
         :return: True bei Erfolg, False falls die Aufgabe nicht existiert
-            oder bereits erledigt wurde.
+            oder nicht im Status "open" ist.
         """
         aufgabe = self._data["tasks"].get(task_id)
         if aufgabe is None:
-            _LOGGER.warning("Aufgabe '%s' nicht gefunden, kann nicht erledigt werden.", task_id)
+            _LOGGER.warning("Aufgabe '%s' nicht gefunden, kann nicht als erledigt gemeldet werden.", task_id)
             return False
-        if aufgabe["status"] == "done":
-            _LOGGER.warning("Aufgabe '%s' wurde bereits erledigt.", aufgabe.get("name"))
+        if aufgabe["status"] != TASK_STATUS_OPEN:
+            _LOGGER.warning(
+                "Aufgabe '%s' hat nicht den Status 'open' (aktuell: '%s') und kann nicht "
+                "als erledigt gemeldet werden.",
+                aufgabe.get("name"),
+                aufgabe["status"],
+            )
             return False
 
-        aufgabe["status"] = "done"
+        aufgabe["status"] = TASK_STATUS_PENDING_APPROVAL
+        aufgabe["pending_by"] = user_id
+        aufgabe["pending_since"] = _jetzt_iso()
+
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_TASK_COMPLETION_REQUESTED,
+            {"task_id": task_id, "user_id": user_id},
+        )
+        _LOGGER.info(
+            "Aufgabe '%s' wurde von Benutzer '%s' als erledigt gemeldet - wartet auf Freigabe.",
+            aufgabe["name"],
+            user_id,
+        )
+        return True
+
+    async def async_approve_task(self, task_id: str) -> bool:
+        """
+        Gibt eine als erledigt gemeldete Aufgabe frei: schreibt dem
+        Benutzer, der sie gemeldet hat, die Punkte gut und trägt sie in
+        die Erledigungs-Historie ein. Nur für Administratoren gedacht
+        (Berechtigungsprüfung erfolgt in __init__.py).
+
+        :return: True bei Erfolg, False falls die Aufgabe nicht existiert
+            oder nicht im Status "pending_approval" ist.
+        """
+        aufgabe = self._data["tasks"].get(task_id)
+        if aufgabe is None:
+            _LOGGER.warning("Aufgabe '%s' nicht gefunden, kann nicht freigegeben werden.", task_id)
+            return False
+        if aufgabe["status"] != TASK_STATUS_PENDING_APPROVAL:
+            _LOGGER.warning(
+                "Aufgabe '%s' wartet nicht auf Freigabe (aktueller Status: '%s').",
+                aufgabe.get("name"),
+                aufgabe["status"],
+            )
+            return False
+
+        user_id = aufgabe["pending_by"]
         punkte = aufgabe["score"]
 
-        # Punktestand des Benutzers erhöhen.
+        aufgabe["status"] = TASK_STATUS_DONE
+        aufgabe["pending_by"] = None
+        aufgabe["pending_since"] = None
+
         aktueller_stand = self._data["scores"].get(user_id, 0)
         self._data["scores"][user_id] = aktueller_stand + punkte
 
-        # Im Verlauf (Historie) vermerken.
         self._data["completions"].append(
             {
+                "completion_id": uuid.uuid4().hex,
                 "task_id": task_id,
                 "task_name": aufgabe["name"],
                 "user_id": user_id,
@@ -331,12 +447,138 @@ class AufgabenScoreboardManager:
         await self._async_persist()
         self.hass.add_job(
             self.hass.bus.async_fire,
+            EVENT_TASK_APPROVED,
+            {"task_id": task_id, "user_id": user_id, "score": punkte},
+        )
+        # Zusätzlich das alte Event weiterhin feuern (Abwärtskompatibilität
+        # für Automationen, die von vor dem Freigabe-Workflow noch auf
+        # EVENT_TASK_COMPLETED reagieren - das war bisher der Moment der
+        # tatsächlichen Punktegutschrift, was jetzt hier passiert).
+        self.hass.add_job(
+            self.hass.bus.async_fire,
             EVENT_TASK_COMPLETED,
             {"task_id": task_id, "user_id": user_id, "score": punkte},
         )
         _LOGGER.info(
-            "Aufgabe '%s' wurde von Benutzer '%s' erledigt (+%s Punkte).",
+            "Aufgabe '%s' von Benutzer '%s' wurde freigegeben (+%s Punkte).",
             aufgabe["name"],
+            user_id,
+            punkte,
+        )
+        return True
+
+    async def async_reject_task(self, task_id: str) -> bool:
+        """
+        Lehnt eine als erledigt gemeldete Aufgabe ab: keine Punkte,
+        Aufgabe geht zurück in den Status "open" und kann erneut
+        erledigt werden. Nur für Administratoren gedacht.
+
+        :return: True bei Erfolg, False falls die Aufgabe nicht existiert
+            oder nicht im Status "pending_approval" ist.
+        """
+        aufgabe = self._data["tasks"].get(task_id)
+        if aufgabe is None:
+            _LOGGER.warning("Aufgabe '%s' nicht gefunden, kann nicht abgelehnt werden.", task_id)
+            return False
+        if aufgabe["status"] != TASK_STATUS_PENDING_APPROVAL:
+            _LOGGER.warning(
+                "Aufgabe '%s' wartet nicht auf Freigabe (aktueller Status: '%s').",
+                aufgabe.get("name"),
+                aufgabe["status"],
+            )
+            return False
+
+        abgelehnter_benutzer = aufgabe["pending_by"]
+        aufgabe["status"] = TASK_STATUS_OPEN
+        aufgabe["pending_by"] = None
+        aufgabe["pending_since"] = None
+
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_TASK_REJECTED,
+            {"task_id": task_id, "user_id": abgelehnter_benutzer},
+        )
+        _LOGGER.info(
+            "Erledigungs-Meldung von Benutzer '%s' für Aufgabe '%s' wurde abgelehnt - "
+            "Aufgabe ist wieder offen.",
+            abgelehnter_benutzer,
+            aufgabe["name"],
+        )
+        return True
+
+    def _completion_ist_ruecknehmbar(self, eintrag: dict[str, Any]) -> bool:
+        """
+        Prüft, ob eine bereits freigegebene Erledigung noch zurückgenommen
+        werden darf: BEIDE Bedingungen müssen zutreffen - innerhalb von
+        UNDO_ZEITLIMIT_TAGE Tagen erledigt UND unter den letzten
+        UNDO_ANZAHL_LIMIT Erledigungen desselben Benutzers.
+        """
+        try:
+            erledigt_am = datetime.fromisoformat(eintrag["completed_at"])
+        except (KeyError, ValueError):
+            return False
+        if datetime.now(timezone.utc) - erledigt_am > timedelta(days=UNDO_ZEITLIMIT_TAGE):
+            return False
+
+        letzte_eintraege_benutzer = sorted(
+            (c for c in self._data["completions"] if c["user_id"] == eintrag["user_id"]),
+            key=lambda c: c["completed_at"],
+            reverse=True,
+        )[:UNDO_ANZAHL_LIMIT]
+        return any(c.get("completion_id") == eintrag.get("completion_id") for c in letzte_eintraege_benutzer)
+
+    async def async_undo_completion(self, completion_id: str) -> bool:
+        """
+        Nimmt eine bereits freigegebene Erledigung zurück: entfernt den
+        Historien-Eintrag, zieht die Punkte wieder ab und setzt die
+        ursprüngliche Aufgabe (sofern sie noch existiert) zurück auf
+        "open". Nur innerhalb der in _completion_ist_ruecknehmbar()
+        geprüften Grenzen möglich. Nur für Administratoren gedacht.
+
+        :return: True bei Erfolg, False falls der Eintrag nicht existiert
+            oder außerhalb der Rücknahme-Grenzen liegt.
+        """
+        eintrag = next(
+            (c for c in self._data["completions"] if c.get("completion_id") == completion_id), None
+        )
+        if eintrag is None:
+            _LOGGER.warning("Erledigungs-Eintrag '%s' nicht gefunden, keine Rücknahme möglich.", completion_id)
+            return False
+        if not self._completion_ist_ruecknehmbar(eintrag):
+            _LOGGER.warning(
+                "Erledigung von '%s' liegt außerhalb der Rücknahme-Grenzen (%s Tage / letzte %s "
+                "Einträge) - keine Rücknahme möglich.",
+                eintrag.get("task_name"),
+                UNDO_ZEITLIMIT_TAGE,
+                UNDO_ANZAHL_LIMIT,
+            )
+            return False
+
+        self._data["completions"].remove(eintrag)
+
+        user_id = eintrag["user_id"]
+        punkte = eintrag["score"]
+        aktueller_stand = self._data["scores"].get(user_id, 0)
+        # Nicht unter 0 fallen - falls der Punktestand zwischenzeitlich
+        # z. B. durch reset_score bereits auf 0 gesetzt wurde.
+        self._data["scores"][user_id] = max(0, aktueller_stand - punkte)
+
+        # Ursprüngliche Aufgabe wieder öffnen, sofern sie noch existiert
+        # (wurde sie inzwischen gelöscht, bleibt nur die Punktekorrektur).
+        aufgabe = self._data["tasks"].get(eintrag["task_id"])
+        if aufgabe is not None and aufgabe["status"] == TASK_STATUS_DONE:
+            aufgabe["status"] = TASK_STATUS_OPEN
+
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_COMPLETION_UNDONE,
+            {"completion_id": completion_id, "task_id": eintrag["task_id"], "user_id": user_id, "score": punkte},
+        )
+        _LOGGER.info(
+            "Erledigung von '%s' durch Benutzer '%s' wurde zurückgenommen (-%s Punkte).",
+            eintrag.get("task_name"),
             user_id,
             punkte,
         )
@@ -361,6 +603,9 @@ class AufgabenScoreboardManager:
         multiscoring: bool = False,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        schedule_type: str | None = None,
+        schedule_interval: int | None = None,
+        schedule_weekday: int | None = None,
     ) -> str:
         """
         Legt eine neue Standardaufgabe (Vorlage) an.
@@ -370,9 +615,17 @@ class AufgabenScoreboardManager:
             erledigbare Aufgabe statt einer gemeinsamen.
         :param trigger_entity_id: Optionale Entität, bei deren Erreichen
             von trigger_state automatisch eine Aufgabe erzeugt wird.
+        :param schedule_type: Optionaler Zeitplan-Trigger ("days" oder
+            "weekly") - unabhängig vom Entitäts-Trigger nutzbar, auch
+            gleichzeitig mit ihm.
+        :param schedule_interval: Bei "days": alle X Tage. Bei "weekly":
+            alle X Wochen (1 = jede Woche). Ohne Angabe: 1.
+        :param schedule_weekday: Nur bei "weekly" erforderlich: Wochentag
+            (0=Montag ... 6=Sonntag).
         :return: Die generierte Vorlagen-ID.
         """
         template_id = uuid.uuid4().hex
+        schedule_type = schedule_type or None
         self._data["templates"][template_id] = {
             "id": template_id,
             "name": name,
@@ -382,6 +635,13 @@ class AufgabenScoreboardManager:
             "multiscoring": bool(multiscoring),
             "trigger_entity_id": trigger_entity_id or None,
             "trigger_state": trigger_state or None,
+            "schedule_type": schedule_type,
+            "schedule_interval": (int(schedule_interval) if schedule_interval else 1) if schedule_type else None,
+            "schedule_weekday": (int(schedule_weekday) if schedule_weekday is not None else None)
+            if schedule_type
+            else None,
+            "schedule_anchor": _heute_iso() if schedule_type else None,
+            "schedule_last_triggered": None,
             "created_at": _jetzt_iso(),
         }
         await self._async_persist()
@@ -390,6 +650,11 @@ class AufgabenScoreboardManager:
         )
         _LOGGER.info("Neue Standardaufgabe angelegt: '%s'", name)
         self.sync_trigger_listeners()
+        if schedule_type:
+            # Falls der neue Zeitplan bereits auf "heute" zutrifft, soll
+            # die erste Aufgabe sofort entstehen statt erst morgen früh
+            # auf die tägliche Prüfung zu warten.
+            await self._async_schedule_check()
         return template_id
 
     async def async_update_template(
@@ -402,13 +667,16 @@ class AufgabenScoreboardManager:
         multiscoring: bool | None = None,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        schedule_type: str | None = None,
+        schedule_interval: int | None = None,
+        schedule_weekday: int | None = None,
     ) -> bool:
         """
         Bearbeitet eine bestehende Standardaufgabe nachträglich. Nur die
         tatsächlich übergebenen Felder werden geändert (gleiches Muster
-        wie async_update_task). Für trigger_entity_id/trigger_state gilt:
-        ein LEERER String entfernt den Trigger bewusst, KEINE Angabe
-        (None) lässt ihn unangetastet.
+        wie async_update_task). Für trigger_entity_id/trigger_state sowie
+        schedule_type gilt: ein LEERER String entfernt den jeweiligen
+        Trigger bewusst, KEINE Angabe (None) lässt ihn unangetastet.
 
         :return: True bei Erfolg, False falls die Vorlage nicht existiert.
         """
@@ -432,10 +700,46 @@ class AufgabenScoreboardManager:
         if trigger_state is not None:
             vorlage["trigger_state"] = trigger_state or None
 
+        if schedule_type is not None:
+            if schedule_type == "":
+                # Zeitplan bewusst entfernen.
+                vorlage["schedule_type"] = None
+                vorlage["schedule_interval"] = None
+                vorlage["schedule_weekday"] = None
+                vorlage["schedule_anchor"] = None
+                vorlage["schedule_last_triggered"] = None
+            else:
+                neuer_interval = (
+                    int(schedule_interval)
+                    if schedule_interval is not None
+                    else (vorlage.get("schedule_interval") or 1)
+                )
+                neuer_weekday = (
+                    int(schedule_weekday) if schedule_weekday is not None else vorlage.get("schedule_weekday")
+                )
+                konfig_geaendert = (
+                    vorlage.get("schedule_type") != schedule_type
+                    or vorlage.get("schedule_interval") != neuer_interval
+                    or vorlage.get("schedule_weekday") != neuer_weekday
+                )
+                vorlage["schedule_type"] = schedule_type
+                vorlage["schedule_interval"] = neuer_interval
+                vorlage["schedule_weekday"] = neuer_weekday
+                if konfig_geaendert:
+                    # Die Tage-/Wochen-Zählung beginnt bei geänderter
+                    # Konfiguration bewusst wieder ab heute - eine alte
+                    # Zähl-Referenz aus einer anderen Konfiguration wäre
+                    # sonst irreführend (z. B. nach Wechsel von "alle 2
+                    # Tage" auf "alle 3 Tage").
+                    vorlage["schedule_anchor"] = _heute_iso()
+                    vorlage["schedule_last_triggered"] = None
+
         await self._async_persist()
         self.hass.add_job(self.hass.bus.async_fire, EVENT_TEMPLATE_UPDATED, {"template_id": template_id})
         _LOGGER.info("Standardaufgabe '%s' wurde bearbeitet.", vorlage.get("name"))
         self.sync_trigger_listeners()
+        if vorlage.get("schedule_type"):
+            await self._async_schedule_check()
         return True
 
     async def async_remove_template(self, template_id: str) -> None:
@@ -506,9 +810,16 @@ class AufgabenScoreboardManager:
         return erzeugte_ids
 
     def _template_has_open_tasks(self, template_id: str) -> bool:
-        """Prüft, ob aus dieser Vorlage noch mindestens eine offene Aufgabe existiert (Duplikat-Schutz)."""
+        """
+        Prüft, ob aus dieser Vorlage noch mindestens eine "aktive" Aufgabe
+        existiert (Duplikat-Schutz). "Aktiv" bedeutet hier: offen ODER
+        bereits als erledigt gemeldet, aber noch nicht freigegeben - eine
+        gemeldete, aber unbestätigte Aufgabe soll nicht durch einen
+        erneuten Trigger/Zeitplan-Check dupliziert werden.
+        """
         return any(
-            aufgabe.get("template_id") == template_id and aufgabe["status"] == "open"
+            aufgabe.get("template_id") == template_id
+            and aufgabe["status"] in (TASK_STATUS_OPEN, TASK_STATUS_PENDING_APPROVAL)
             for aufgabe in self._data["tasks"].values()
         )
 
@@ -582,11 +893,121 @@ class AufgabenScoreboardManager:
             return
         await self.async_create_task_from_template(template_id)
 
+    # ------------------------------------------------------------------
+    # Zeitplan-Trigger (alle X Tage / jede bzw. alle X Wochen am
+    # Wochentag Y) - unabhängig vom Entitäts-Trigger nutzbar, auch
+    # gleichzeitig mit ihm.
+    # ------------------------------------------------------------------
+
+    @callback
+    def async_setup_schedule(self) -> None:
+        """
+        Registriert die tägliche Zeitplan-Prüfung (einmal um 00:05 Uhr
+        Server-Zeit). Wird einmalig beim Start der Integration aus
+        __init__.py aufgerufen, direkt nach async_load().
+
+        Zusätzlich wird sofort eine einmalige Nachhol-Prüfung angestoßen:
+        War Home Assistant um 00:05 Uhr nicht aktiv (z. B. Neustart am
+        Morgen), würde ohne diese Nachhol-Prüfung ein fälliger Zeitplan
+        erst am nächsten Tag bemerkt.
+        """
+        if self._schedule_unsub is not None:
+            return
+        self._schedule_unsub = async_track_time_change(
+            self.hass, self._schedule_time_callback, hour=0, minute=5, second=0
+        )
+        self.hass.async_create_task(self._async_schedule_check())
+
+    @callback
+    def _schedule_time_callback(self, jetzt) -> None:
+        """Callback von async_track_time_change - stößt die eigentliche (async) Prüfung an."""
+        self.hass.async_create_task(self._async_schedule_check(jetzt))
+
+    async def _async_schedule_check(self, jetzt=None) -> None:
+        """
+        Prüft für alle Standardaufgaben mit konfiguriertem Zeitplan, ob
+        heute ein fälliger Tag ist, und legt bei Bedarf (Duplikat-Schutz-
+        geprüft) eine neue Aufgabe an.
+
+        Zwei voneinander unabhängige Schutzmechanismen verhindern
+        doppelte Anlage:
+          1. schedule_last_triggered == heute: verhindert eine zweite
+             Anlage am selben Tag, selbst wenn die zuvor erzeugte
+             Aufgabe zwischenzeitlich bereits erledigt wurde (die
+             "offene Aufgabe existiert bereits"-Prüfung allein würde das
+             nicht abdecken).
+          2. _template_has_open_tasks(): das bestehende, vom
+             Entitäts-Trigger bekannte Duplikat-Schutz-Muster - keine
+             neue Aufgabe, solange aus dieser Vorlage noch eine offene
+             existiert.
+        """
+        heute = (jetzt or dt_util.now()).date()
+        heute_iso = heute.isoformat()
+
+        for vorlage in list(self._data["templates"].values()):
+            if not vorlage.get("schedule_type"):
+                continue
+            if vorlage.get("schedule_last_triggered") == heute_iso:
+                continue
+            if not self._schedule_matches_today(vorlage, heute):
+                continue
+            if self._template_has_open_tasks(vorlage["id"]):
+                continue
+
+            vorlage["schedule_last_triggered"] = heute_iso
+            await self._async_persist()
+            _LOGGER.info(
+                "Zeitplan-Trigger für Standardaufgabe '%s' ist heute fällig - lege Aufgabe an.",
+                vorlage.get("name"),
+            )
+            await self.async_create_task_from_template(vorlage["id"])
+
+    @staticmethod
+    def _schedule_matches_today(vorlage: dict[str, Any], heute: date) -> bool:
+        """
+        Prüft, ob der Zeitplan einer Vorlage auf das übergebene Datum
+        zutrifft.
+
+        - "days": zutreffend, wenn die Anzahl Tage seit schedule_anchor
+          ein ganzzahliges Vielfaches von schedule_interval ist.
+        - "weekly": zutreffend, wenn heute der konfigurierte Wochentag
+          ist UND die Anzahl KALENDERWOCHEN seit der Woche von
+          schedule_anchor ein ganzzahliges Vielfaches von
+          schedule_interval ist (schedule_interval=1 entspricht damit
+          "jede Woche").
+        """
+        schedule_type = vorlage.get("schedule_type")
+        if not schedule_type:
+            return False
+
+        intervall = max(1, int(vorlage.get("schedule_interval") or 1))
+        anchor_str = vorlage.get("schedule_anchor")
+        anchor = date.fromisoformat(anchor_str) if anchor_str else heute
+        if heute < anchor:
+            return False
+
+        if schedule_type == SCHEDULE_TYPE_DAYS:
+            return (heute - anchor).days % intervall == 0
+
+        if schedule_type == SCHEDULE_TYPE_WEEKLY:
+            ziel_wochentag = vorlage.get("schedule_weekday")
+            if ziel_wochentag is None or heute.weekday() != int(ziel_wochentag):
+                return False
+            anchor_montag = anchor - timedelta(days=anchor.weekday())
+            heute_montag = heute - timedelta(days=heute.weekday())
+            wochen_diff = (heute_montag - anchor_montag).days // 7
+            return wochen_diff % intervall == 0
+
+        return False
+
     def async_unload(self) -> None:
-        """Meldet alle Entitäts-Trigger-Listener ab (beim Entladen/Neuladen der Integration)."""
+        """Meldet alle Entitäts- und Zeitplan-Trigger-Listener ab (beim Entladen/Neuladen der Integration)."""
         for abmelden in self._trigger_unsub.values():
             abmelden()
         self._trigger_unsub.clear()
+        if self._schedule_unsub is not None:
+            self._schedule_unsub()
+            self._schedule_unsub = None
 
     # ------------------------------------------------------------------
     # Lesezugriffe (werden u. a. von den Sensor-Entitäten verwendet)
@@ -609,22 +1030,50 @@ class AufgabenScoreboardManager:
         """
         ergebnis = []
         for aufgabe in self._data["tasks"].values():
-            if aufgabe["status"] != "open":
+            if aufgabe["status"] != TASK_STATUS_OPEN:
                 continue
             zugewiesen = aufgabe["assigned_to"]
             if not zugewiesen or user_id in zugewiesen:
                 ergebnis.append(copy.deepcopy(aufgabe))
         return ergebnis
 
+    def get_pending_tasks_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        """
+        Liefert die Aufgaben, die DIESER Benutzer selbst als erledigt
+        gemeldet hat und die noch auf Freigabe warten (für die Anzeige
+        "wartet auf Freigabe" im persönlichen Bereich).
+        """
+        return [
+            copy.deepcopy(a)
+            for a in self._data["tasks"].values()
+            if a["status"] == TASK_STATUS_PENDING_APPROVAL and a.get("pending_by") == user_id
+        ]
+
+    def get_all_pending_tasks(self) -> list[dict[str, Any]]:
+        """Liefert ALLE auf Freigabe wartenden Aufgaben (für den Admin-Bereich)."""
+        return [
+            copy.deepcopy(a) for a in self._data["tasks"].values() if a["status"] == TASK_STATUS_PENDING_APPROVAL
+        ]
+
     def get_completed_tasks_for_user(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Liefert die letzten erledigten Aufgaben eines Benutzers (neueste zuerst)."""
+        """
+        Liefert die letzten erledigten (freigegebenen) Aufgaben eines
+        Benutzers (neueste zuerst). Jeder Eintrag bekommt zusätzlich ein
+        vom Server berechnetes "ruecknehmbar"-Flag - so muss dieselbe
+        Grenzwert-Logik (Zeit + Anzahl) nicht zusätzlich im Frontend
+        nachgebaut werden; einzige Quelle der Wahrheit bleibt
+        _completion_ist_ruecknehmbar().
+        """
         eintraege = [copy.deepcopy(c) for c in self._data["completions"] if c["user_id"] == user_id]
         eintraege.sort(key=lambda c: c["completed_at"], reverse=True)
-        return eintraege[:limit]
+        eintraege = eintraege[:limit]
+        for eintrag in eintraege:
+            eintrag["ruecknehmbar"] = self._completion_ist_ruecknehmbar(eintrag)
+        return eintraege
 
     def get_all_open_tasks(self) -> list[dict[str, Any]]:
         """Liefert alle offenen Aufgaben (für Übersichts-/Admin-Ansicht)."""
-        return [copy.deepcopy(a) for a in self._data["tasks"].values() if a["status"] == "open"]
+        return [copy.deepcopy(a) for a in self._data["tasks"].values() if a["status"] == TASK_STATUS_OPEN]
 
     def get_all_tasks(self) -> list[dict[str, Any]]:
         """

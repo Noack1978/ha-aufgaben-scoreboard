@@ -47,6 +47,14 @@ EVENT_TASK_COMPLETED = f"{DOMAIN}_task_completed"
 EVENT_TASK_REMOVED = f"{DOMAIN}_task_removed"
 EVENT_TASK_ASSIGNED = f"{DOMAIN}_task_assigned"
 
+# Freigabe-Workflow: Erledigung durch einen Benutzer erzeugt zunächst nur
+# eine ANFRAGE (pending_approval) - erst nach Admin-Freigabe werden
+# Punkte gutgeschrieben. Siehe manager.py für die Statuslogik.
+EVENT_TASK_COMPLETION_REQUESTED = f"{DOMAIN}_task_completion_requested"
+EVENT_TASK_APPROVED = f"{DOMAIN}_task_approved"
+EVENT_TASK_REJECTED = f"{DOMAIN}_task_rejected"
+EVENT_COMPLETION_UNDONE = f"{DOMAIN}_completion_undone"
+
 EVENT_TEMPLATE_ADDED = f"{DOMAIN}_template_added"
 EVENT_TEMPLATE_UPDATED = f"{DOMAIN}_template_updated"
 EVENT_TEMPLATE_REMOVED = f"{DOMAIN}_template_removed"
@@ -62,6 +70,9 @@ SERVICE_REMOVE_TASK = "remove_task"
 SERVICE_ASSIGN_TASK = "assign_task"
 SERVICE_UNASSIGN_TASK = "unassign_task"
 SERVICE_COMPLETE_TASK = "complete_task"
+SERVICE_APPROVE_TASK = "approve_task"
+SERVICE_REJECT_TASK = "reject_task"
+SERVICE_UNDO_COMPLETION = "undo_completion"
 SERVICE_RESET_SCORE = "reset_score"
 
 # Standardaufgaben (Vorlagen): wiederverwendbare Aufgaben-Definitionen,
@@ -83,12 +94,40 @@ ATTR_DESCRIPTION = "description"
 ATTR_SCORE = "score"
 ATTR_USER_ID = "user_id"
 ATTR_ASSIGNED_TO = "assigned_to"
+ATTR_COMPLETION_ID = "completion_id"
+
+# -----------------------------------------------------------------------
+# Freigabe-Workflow (Erledigung -> Prüfung durch Admin -> Punkte)
+# -----------------------------------------------------------------------
+
+# Aufgaben-Status-Werte (bisher nur "open"/"done" - neu dazwischen:
+# "pending_approval", solange ein Benutzer die Aufgabe als erledigt
+# gemeldet hat, ein Admin sie aber noch nicht bestätigt hat).
+TASK_STATUS_OPEN = "open"
+TASK_STATUS_PENDING_APPROVAL = "pending_approval"
+TASK_STATUS_DONE = "done"
+
+# Nachträgliche Rücknahme einer bereits freigegebenen Erledigung: nur
+# innerhalb dieses Zeitraums UND nur unter den letzten N Erledigungen
+# DESSELBEN Benutzers möglich (beide Bedingungen müssen zutreffen).
+UNDO_ZEITLIMIT_TAGE = 7
+UNDO_ANZAHL_LIMIT = 20
 
 # Standardaufgaben (Vorlagen)
 ATTR_TEMPLATE_ID = "template_id"
 ATTR_MULTISCORING = "multiscoring"
 ATTR_TRIGGER_ENTITY_ID = "trigger_entity_id"
 ATTR_TRIGGER_STATE = "trigger_state"
+
+# Zeitplan-Trigger für Standardaufgaben (zusätzlich/alternativ zum
+# Entitäts-Trigger): automatische Anlage nach Tages- oder
+# Wochen-Intervall, siehe AufgabenScoreboardManager._schedule_matches_today().
+ATTR_SCHEDULE_TYPE = "schedule_type"
+ATTR_SCHEDULE_INTERVAL = "schedule_interval"
+ATTR_SCHEDULE_WEEKDAY = "schedule_weekday"
+
+SCHEDULE_TYPE_DAYS = "days"
+SCHEDULE_TYPE_WEEKLY = "weekly"
 
 # -----------------------------------------------------------------------
 # Konstanten für das Frontend (Sidebar-Panel + Custom Card).

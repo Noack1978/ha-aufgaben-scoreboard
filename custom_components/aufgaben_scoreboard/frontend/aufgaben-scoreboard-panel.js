@@ -40,6 +40,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // DOM, was die Formular-Zustand-Sicherung (siehe unten) vereinfacht.
     this._vorlagenFormularOffen = false;
     this._bearbeiteVorlageId = null;
+    // Merkt sich, für welchen Benutzer (falls überhaupt) der
+    // Erledigungs-Verlauf in der Rangliste gerade aufgeklappt ist -
+    // null = keiner. Immer nur einer gleichzeitig aufgeklappt.
+    this._aufgeklappterVerlaufUserId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -156,6 +160,18 @@ class AufgabenScoreboardPanel extends HTMLElement {
       task_id: taskId,
       user_id: userId,
     });
+  }
+
+  _aufgabeFreigeben(taskId) {
+    this._hass.callService("aufgaben_scoreboard", "approve_task", { task_id: taskId });
+  }
+
+  _aufgabeAblehnen(taskId) {
+    this._hass.callService("aufgaben_scoreboard", "reject_task", { task_id: taskId });
+  }
+
+  _erledigungRueckgaengig(completionId) {
+    this._hass.callService("aufgaben_scoreboard", "undo_completion", { completion_id: completionId });
   }
 
   _aufgabeLoeschen(taskId) {
@@ -326,25 +342,32 @@ class AufgabenScoreboardPanel extends HTMLElement {
           ${benutzerSensoren
             .slice()
             .sort((a, b) => Number(b.zustand.state) - Number(a.zustand.state))
-            .map(
-              (b) => `
-              <div class="rang-eintrag ${b.zustand.attributes.user_id === eigeneUserId ? "ich" : ""}">
-                <span class="rang-name">${this._escape(b.zustand.attributes.friendly_name || b.entityId)}</span>
+            .map((b) => {
+              const userId = b.zustand.attributes.user_id;
+              const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
+              const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
+              return `
+              <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
+                <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
+                  ${this._escape(b.zustand.attributes.friendly_name || b.entityId)}
+                  <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
+                </span>
                 <div class="rang-rechts">
                   <span class="rang-punkte">${b.zustand.state} Pkt.</span>
                   ${
                     istAdmin
                       ? `<button
                           class="btn-secondary reset-punkte-btn"
-                          data-user-id="${b.zustand.attributes.user_id}"
+                          data-user-id="${userId}"
                           data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
                           title="Punktestand zurücksetzen"
                         >Zurücksetzen</button>`
                       : ""
                   }
                 </div>
-              </div>`
-            )
+              </div>
+              ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}`;
+            })
             .join("")}
         </div>
 
@@ -353,6 +376,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
           ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
         </div>
 
+        ${istAdmin ? this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
@@ -361,25 +385,35 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // ha-selector-Elemente (Entität/Zustand für den Trigger) sind keine
     // im HTML-Template deklarierbaren Standardelemente - sie müssen nach
     // dem Setzen von innerHTML programmatisch erzeugt und eingebaut
-    // werden (siehe _haSelectorenEinbauen()).
-    this._haSelectorenEinbauen(uebersichtsSensor);
+    // werden (siehe _haSelectorenEinbauen()). Der gesicherte
+    // Formular-Zustand wird mitgegeben, damit bereits im laufenden
+    // Formular getroffene (aber noch nicht gespeicherte) Änderungen -
+    // z. B. eine gerade erst ausgewählte oder bewusst gelöschte Entität -
+    // beim Neu-Aufbau nicht durch die alten, gespeicherten Vorlagendaten
+    // überschrieben werden.
+    this._haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand);
 
     this._eventListenerRegistrieren(istAdmin, benutzerSensoren);
 
     // Gesicherte Formularwerte + Fokus wiederherstellen (falls das
     // Formular offen war und Re-Render trotzdem stattgefunden hat).
     this._stelleFormularZustandWieder(gesicherterFormularZustand);
+
+    // Sichtbarkeit der Zeitplan-Unterfelder (Intervall/Wochentag) an den
+    // ggf. gerade wiederhergestellten Auswahlwert anpassen - siehe
+    // _vorlagenZeitplanUiAktualisieren().
+    this._vorlagenZeitplanUiAktualisieren();
   }
 
   _renderEigeneAufgaben(benutzerSensoren, eigeneUserId) {
     const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
     const aufgaben = eigener ? eigener.zustand.attributes.offene_aufgaben : [];
+    const wartende = eigener ? eigener.zustand.attributes.wartende_aufgaben : [];
 
-    if (!aufgaben || aufgaben.length === 0) {
-      return `<div class="hinweis">Keine offenen Aufgaben für dich. 🎉</div>`;
-    }
-
-    return `
+    const offenListe =
+      !aufgaben || aufgaben.length === 0
+        ? `<div class="hinweis">Keine offenen Aufgaben für dich. 🎉</div>`
+        : `
       <div class="aufgaben-liste">
         ${aufgaben
           .map(
@@ -396,6 +430,128 @@ class AufgabenScoreboardPanel extends HTMLElement {
           </div>`
           )
           .join("")}
+      </div>
+    `;
+
+    const wartendListe =
+      wartende && wartende.length > 0
+        ? `
+      <div class="aufgaben-liste wartend-liste">
+        ${wartende
+          .map(
+            (a) => `
+          <div class="aufgaben-karte wartend">
+            <div class="aufgaben-info">
+              <div class="aufgaben-name">${this._escape(a.name)}</div>
+              <div class="aufgaben-beschreibung">⏳ Wartet auf Freigabe durch einen Administrator</div>
+            </div>
+            <div class="aufgaben-aktion">
+              <span class="punkte-badge punkte-badge-wartend">+${a.score}</span>
+            </div>
+          </div>`
+          )
+          .join("")}
+      </div>
+    `
+        : "";
+
+    return offenListe + wartendListe;
+  }
+
+  /**
+   * Rendert den aufklappbaren Erledigungs-Verlauf eines einzelnen
+   * Benutzers unterhalb seines Rangliste-Eintrags. Das "ruecknehmbar"-
+   * Flag jedes Eintrags kommt bereits fertig berechnet vom Server
+   * (siehe AufgabenScoreboardManager.get_completed_tasks_for_user) -
+   * das Frontend muss die Zeit-/Mengen-Grenze nicht selbst nachbauen.
+   */
+  _renderVerlauf(verlauf, istAdmin) {
+    if (!verlauf || verlauf.length === 0) {
+      return `<div class="verlauf-bereich"><div class="hinweis-klein">Noch keine erledigten Aufgaben.</div></div>`;
+    }
+
+    return `
+      <div class="verlauf-bereich">
+        ${verlauf
+          .map(
+            (eintrag) => `
+          <div class="verlauf-eintrag">
+            <div class="verlauf-info">
+              <span class="verlauf-name">${this._escape(eintrag.task_name)}</span>
+              <span class="verlauf-datum">${this._formatiereDatum(eintrag.completed_at)}</span>
+            </div>
+            <div class="verlauf-aktion">
+              <span class="punkte-badge">+${eintrag.score}</span>
+              ${
+                istAdmin
+                  ? eintrag.ruecknehmbar
+                    ? `<button class="btn-danger rueckgaengig-btn" data-completion-id="${eintrag.completion_id}" data-task-name="${this._escape(eintrag.task_name)}">Rückgängig</button>`
+                    : `<span class="hinweis-klein">nicht mehr rücknehmbar</span>`
+                  : ""
+              }
+            </div>
+          </div>`
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  /** Formatiert einen ISO-8601-Zeitstempel als lesbares Datum (TT.MM.JJJJ, hh:mm). */
+  _formatiereDatum(isoZeitstempel) {
+    try {
+      const datum = new Date(isoZeitstempel);
+      return datum.toLocaleString("de-DE", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (fehler) {
+      return isoZeitstempel;
+    }
+  }
+
+  /**
+   * Admin-Bereich "Wartet auf Freigabe": alle Aufgaben, die irgendein
+   * Benutzer als erledigt gemeldet hat, aber noch nicht bestätigt
+   * wurden. Wird nur für Administratoren gerendert.
+   */
+  _renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) {
+    const wartende = uebersichtsSensor ? uebersichtsSensor.attributes.wartende_aufgaben || [] : [];
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <h2>⏳ Wartet auf Freigabe${wartende.length > 0 ? ` (${wartende.length})` : ""}</h2>
+        ${
+          wartende.length === 0
+            ? `<div class="hinweis">Aktuell nichts zu prüfen.</div>`
+            : `
+          <div class="aufgaben-liste">
+            ${wartende
+              .map(
+                (a) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(a.name)}</div>
+                  ${a.description ? `<div class="aufgaben-beschreibung">${this._escape(a.description)}</div>` : ""}
+                  <div class="aufgaben-zuweisung">
+                    Gemeldet von: ${this._nameFuerUserId(a.pending_by, benutzerSensoren)}
+                    · ${this._formatiereDatum(a.pending_since)}
+                  </div>
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">+${a.score}</span>
+                  <button class="btn-primary freigeben-btn" data-task-id="${a.id}">Freigeben</button>
+                  <button class="btn-danger ablehnen-btn" data-task-id="${a.id}">Ablehnen</button>
+                </div>
+              </div>`
+              )
+              .join("")}
+          </div>
+        `
+        }
       </div>
     `;
   }
@@ -544,6 +700,20 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return treffer ? this._escape(treffer.zustand.attributes.friendly_name || userId) : userId;
   }
 
+  /** Baut eine kurze, lesbare Beschreibung des Zeitplans einer Vorlage für das Badge (z. B. "Alle 2 Wochen am Mittwoch"). */
+  _zeitplanBeschreibung(vorlage) {
+    const wochentagsNamen = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+    const intervall = vorlage.schedule_interval || 1;
+    if (vorlage.schedule_type === "days") {
+      return intervall === 1 ? "Täglich" : `Alle ${intervall} Tage`;
+    }
+    if (vorlage.schedule_type === "weekly") {
+      const wochentag = wochentagsNamen[vorlage.schedule_weekday] || "?";
+      return intervall === 1 ? `Jede Woche am ${wochentag}` : `Alle ${intervall} Wochen am ${wochentag}`;
+    }
+    return "";
+  }
+
   /**
    * Admin-Bereich "Standardaufgaben" (Vorlagen): Liste + Formular zum
    * Anlegen/Bearbeiten. Nutzt bewusst dieselben Formular-Feldnamen wie
@@ -565,6 +735,32 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const formularTitel = bearbeiteteVorlage ? "Standardaufgabe bearbeiten" : "Neue Standardaufgabe anlegen";
     const buttonBeschriftung = bearbeiteteVorlage ? "Änderungen speichern" : "Standardaufgabe anlegen";
     const vorbelegteBenutzer = bearbeiteteVorlage ? bearbeiteteVorlage.assigned_to || [] : [];
+
+    // Zeitplan-Vorbelegung: das Dropdown "schedule_type_ui" ist eine reine
+    // UI-Auswahl mit VIER Optionen ("", "days", "weekly_single",
+    // "weekly_interval"), die beim Absenden auf die ZWEI tatsächlichen
+    // Backend-Werte (schedule_type "days"/"weekly" + schedule_interval)
+    // abgebildet wird - siehe _vorlagenFormularAbsenden().
+    let zeitplanTypUiWert = "";
+    let zeitplanIntervallWert = 1;
+    let zeitplanWochentagWert = 0;
+    if (bearbeiteteVorlage && bearbeiteteVorlage.schedule_type === "days") {
+      zeitplanTypUiWert = "days";
+      zeitplanIntervallWert = bearbeiteteVorlage.schedule_interval || 1;
+    } else if (bearbeiteteVorlage && bearbeiteteVorlage.schedule_type === "weekly") {
+      zeitplanIntervallWert = bearbeiteteVorlage.schedule_interval || 1;
+      zeitplanWochentagWert = bearbeiteteVorlage.schedule_weekday != null ? bearbeiteteVorlage.schedule_weekday : 0;
+      zeitplanTypUiWert = zeitplanIntervallWert > 1 ? "weekly_interval" : "weekly_single";
+    }
+    const zeitplanWochentage = [
+      ["0", "Montag"],
+      ["1", "Dienstag"],
+      ["2", "Mittwoch"],
+      ["3", "Donnerstag"],
+      ["4", "Freitag"],
+      ["5", "Samstag"],
+      ["6", "Sonntag"],
+    ];
 
     return `
       <div class="abschnitt admin-bereich">
@@ -623,13 +819,53 @@ class AufgabenScoreboardPanel extends HTMLElement {
               </span>
             </label>
             <fieldset class="trigger-feld">
-              <legend>Automatische Anlage (optional)</legend>
+              <legend>Automatische Anlage per Entität (optional)</legend>
               <div class="ha-selector-slot" data-feld="trigger_entity_id"></div>
               <div class="ha-selector-slot" data-feld="trigger_state"></div>
               <div class="hinweis-klein">
                 Sobald die gewählte Entität den Ziel-Zustand erreicht, wird
                 automatisch eine Aufgabe aus dieser Vorlage angelegt - sofern
                 nicht bereits eine offene Aufgabe daraus existiert.
+              </div>
+            </fieldset>
+            <fieldset class="zeitplan-feld">
+              <legend>Automatische Anlage per Zeitplan (optional)</legend>
+              <label>
+                Wiederholung
+                <select name="schedule_type_ui" class="zeitplan-typ-auswahl">
+                  <option value="" ${zeitplanTypUiWert === "" ? "selected" : ""}>Kein Zeitplan</option>
+                  <option value="days" ${zeitplanTypUiWert === "days" ? "selected" : ""}>Alle X Tage</option>
+                  <option value="weekly_single" ${
+                    zeitplanTypUiWert === "weekly_single" ? "selected" : ""
+                  }>Jede Woche am Wochentag</option>
+                  <option value="weekly_interval" ${
+                    zeitplanTypUiWert === "weekly_interval" ? "selected" : ""
+                  }>Alle X Wochen am Wochentag</option>
+                </select>
+              </label>
+              <label class="zeitplan-intervall-feld" data-zeitplan-zeile="interval">
+                Alle
+                <input type="number" name="schedule_interval" min="1" value="${zeitplanIntervallWert}" />
+                <span class="zeitplan-einheit-label">${zeitplanTypUiWert === "weekly_interval" ? "Wochen" : "Tage"}</span>
+              </label>
+              <label class="zeitplan-wochentag-feld" data-zeitplan-zeile="weekday">
+                Wochentag
+                <select name="schedule_weekday">
+                  ${zeitplanWochentage
+                    .map(
+                      ([wert, bezeichnung]) =>
+                        `<option value="${wert}" ${
+                          String(zeitplanWochentagWert) === wert ? "selected" : ""
+                        }>${bezeichnung}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+              <div class="hinweis-klein">
+                Erzeugt automatisch eine neue Aufgabe nach dem gewählten
+                Zeitplan - sofern nicht bereits eine offene Aufgabe aus
+                dieser Vorlage existiert. Kann zusätzlich zum
+                Entitäts-Trigger oder unabhängig davon genutzt werden.
               </div>
             </fieldset>
             <div class="formular-aktionen">
@@ -672,6 +908,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
                           )}</span>`
                         : ""
                     }
+                    ${v.schedule_type ? `<span class="vorlage-badge">📅 ${this._escape(this._zeitplanBeschreibung(v))}</span>` : ""}
                   </div>
                 </div>
                 <div class="aufgaben-aktion">
@@ -703,7 +940,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * irgendeinem Grund nicht verfügbar sein sollte (defensive
    * Absicherung, sollte in der Praxis nicht vorkommen).
    */
-  _haSelectorenEinbauen(uebersichtsSensor) {
+  _haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand) {
     const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
     const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
     if (!entitySlot || !stateSlot) return;
@@ -713,8 +950,30 @@ class AufgabenScoreboardPanel extends HTMLElement {
       ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
       : null;
 
-    const entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
-    const stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
+    // Startwerte: zunächst aus der zuletzt GESPEICHERTEN Vorlage (Server-
+    // Daten) - das ist der richtige Ausgangspunkt beim allerersten Öffnen
+    // des Formulars.
+    let entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
+    let stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
+
+    // WICHTIG: Ist bereits ein Formular-Zustand für GENAU dieses Formular
+    // gesichert (z. B. weil dieses Re-Render durch eine Eingabe im
+    // laufenden Formular selbst ausgelöst wurde - Entität ausgewählt,
+    // Entität wieder gelöscht, ...), hat dieser IMMER Vorrang vor den
+    // alten Server-Daten. Ohne diese Vorrangregel würde z. B. das
+    // Löschen der Entitäts-Auswahl beim direkt folgenden Re-Render sofort
+    // wieder mit dem alten, gespeicherten Wert überschrieben werden - der
+    // Status-Selector würde zudem die Zustände der FALSCHEN (alten)
+    // Entität vorschlagen, statt die der gerade neu gewählten.
+    const aktuellesFormularId = this.shadowRoot.querySelector(".formular-mit-zustand")?.id;
+    if (gesicherterFormularZustand && gesicherterFormularZustand.formularId === aktuellesFormularId) {
+      if ("trigger_entity_id" in gesicherterFormularZustand.werte) {
+        entityWert = gesicherterFormularZustand.werte.trigger_entity_id || "";
+      }
+      if ("trigger_state" in gesicherterFormularZustand.werte) {
+        stateWert = gesicherterFormularZustand.werte.trigger_state || "";
+      }
+    }
 
     const HaSelector = customElements.get("ha-selector");
     if (!HaSelector) {
@@ -734,9 +993,20 @@ class AufgabenScoreboardPanel extends HTMLElement {
     entitySelector.label = "Auslösende Entität";
     entitySelector.selector = { entity: {} };
     entitySelector.value = entityWert || undefined;
+    // WICHTIG: explizit als NICHT erforderlich markieren. Ohne diese
+    // Angabe kann ha-selector das Feld intern als "required" behandeln -
+    // required-Felder zeigen üblicherweise KEIN Lösch-Icon an, obwohl der
+    // Trigger hier ausdrücklich optional ist.
+    entitySelector.required = false;
     entitySelector.dataset.feldName = "trigger_entity_id";
     entitySelector.addEventListener("value-changed", (ev) => {
       ev.stopPropagation();
+      // WICHTIG: ha-selector ist eine "controlled component" - sie hält
+      // den ausgewählten Wert NICHT selbst fest, sondern überlässt das
+      // bewusst dem Aufrufer (üblich bei allen HA-Formular-Selectoren).
+      // Ohne dieses explizite Zurückschreiben auf .value würde die
+      // Auswahl beim nächsten Render (siehe unten) wieder verloren gehen.
+      entitySelector.value = ev.detail.value;
       // Neu rendern, damit der Ziel-Zustand-Selector direkt im Anschluss
       // mit der NEU gewählten Entität aufgebaut wird und deren bekannte
       // Zustände vorschlägt (genau wie im Automationen-Editor). Bereits
@@ -750,16 +1020,48 @@ class AufgabenScoreboardPanel extends HTMLElement {
     stateSelector.label = "Ziel-Zustand";
     stateSelector.selector = { state: { entity_id: entityWert || undefined } };
     stateSelector.value = stateWert || undefined;
+    stateSelector.required = false;
     stateSelector.dataset.feldName = "trigger_state";
+    stateSelector.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      // Aus demselben Grund wie beim Entity-Selector: den gewählten Wert
+      // explizit übernehmen. Hier reicht das (ohne Neu-Rendern), da
+      // beim Absenden direkt aus dem Element gelesen wird (siehe
+      // _vorlagenFormularAbsenden) und kein zweiter Selector davon abhängt.
+      stateSelector.value = ev.detail.value;
+    });
 
     entitySlot.innerHTML = "";
     entitySlot.appendChild(entitySelector);
     stateSlot.innerHTML = "";
     stateSlot.appendChild(stateSelector);
+
+    // Zusätzlich zu einem eventuellen eingebauten Lösch-Icon des
+    // Selectors: ein eigener, garantiert sichtbarer Button, der BEIDE
+    // Trigger-Felder auf einen Klick leert. So ist das Entfernen nicht
+    // von einer UI-Eigenheit des ha-selector abhängig, die sich zwischen
+    // Home-Assistant-Versionen unterscheiden kann.
+    if (entityWert || stateWert) {
+      const entfernenBtn = document.createElement("button");
+      entfernenBtn.type = "button";
+      entfernenBtn.className = "btn-secondary trigger-entfernen-btn";
+      entfernenBtn.textContent = "Trigger entfernen";
+      entfernenBtn.addEventListener("click", () => {
+        entitySelector.value = undefined;
+        stateSelector.value = undefined;
+        this._render();
+      });
+      stateSlot.appendChild(entfernenBtn);
+    }
   }
 
   _eventListenerRegistrieren(istAdmin, benutzerSensoren) {
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
+
+    const zeitplanTypSelect = this.shadowRoot.querySelector('select[name="schedule_type_ui"]');
+    if (zeitplanTypSelect) {
+      zeitplanTypSelect.addEventListener("change", () => this._vorlagenZeitplanUiAktualisieren());
+    }
 
     const menuBtn = this.shadowRoot.getElementById("menu-btn");
     if (menuBtn) {
@@ -776,6 +1078,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".rang-name-klickbar").forEach((el) => {
+      el.addEventListener("click", () => {
+        const userId = el.getAttribute("data-user-id");
+        this._aufgeklappterVerlaufUserId = this._aufgeklappterVerlaufUserId === userId ? null : userId;
+        this._render();
+      });
+    });
+
     if (!istAdmin) return;
 
     this.shadowRoot.querySelectorAll(".reset-punkte-btn").forEach((btn) => {
@@ -784,6 +1094,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
         const userName = ev.target.getAttribute("data-user-name");
         if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen?`)) {
           this._punktestandZuruecksetzen(userId);
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".freigeben-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._aufgabeFreigeben(ev.target.getAttribute("data-task-id"));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ablehnen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diese Erledigung wirklich ablehnen? Die Aufgabe wird wieder offen.")) {
+          this._aufgabeAblehnen(ev.target.getAttribute("data-task-id"));
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".rueckgaengig-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const taskName = ev.target.getAttribute("data-task-name");
+        if (confirm(`Erledigung von "${taskName}" wirklich zurücknehmen? Die Punkte werden wieder abgezogen.`)) {
+          this._erledigungRueckgaengig(ev.target.getAttribute("data-completion-id"));
         }
       });
     });
@@ -904,6 +1237,36 @@ class AufgabenScoreboardPanel extends HTMLElement {
     });
   }
 
+  /**
+   * Blendet die Zeitplan-Unterfelder (Intervall-Zeile / Wochentag-Zeile)
+   * je nach aktueller Auswahl im "schedule_type_ui"-Dropdown ein oder
+   * aus und passt das Einheiten-Label ("Tage"/"Wochen") an. Wird sowohl
+   * beim "change"-Event des Dropdowns als auch einmalig nach jedem
+   * _render() aufgerufen (damit die Sichtbarkeit auch nach einem durch
+   * hass-Update ausgelösten Neuaufbau des Formulars korrekt ist).
+   */
+  _vorlagenZeitplanUiAktualisieren() {
+    const typSelect = this.shadowRoot.querySelector('select[name="schedule_type_ui"]');
+    if (!typSelect) return;
+    const formular = typSelect.closest("form");
+    if (!formular) return;
+
+    const wert = typSelect.value;
+    const intervallZeile = formular.querySelector('[data-zeitplan-zeile="interval"]');
+    const wochentagZeile = formular.querySelector('[data-zeitplan-zeile="weekday"]');
+    const einheitLabel = formular.querySelector(".zeitplan-einheit-label");
+
+    if (intervallZeile) {
+      intervallZeile.style.display = wert === "days" || wert === "weekly_interval" ? "" : "none";
+    }
+    if (wochentagZeile) {
+      wochentagZeile.style.display = wert === "weekly_single" || wert === "weekly_interval" ? "" : "none";
+    }
+    if (einheitLabel) {
+      einheitLabel.textContent = wert === "weekly_interval" ? "Wochen" : "Tage";
+    }
+  }
+
   /** Verarbeitet das Absenden des Standardaufgaben-Formulars (Anlegen ODER Bearbeiten). */
   _vorlagenFormularAbsenden(ev, formular) {
     ev.preventDefault();
@@ -917,6 +1280,30 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const triggerEntityId = entityFeld ? entityFeld.value || "" : "";
     const triggerState = stateFeld ? stateFeld.value || "" : "";
 
+    // Zeitplan: die UI-Auswahl (schedule_type_ui, 4 Optionen) auf die
+    // beiden tatsächlichen Backend-Felder abbilden - siehe Kommentar bei
+    // der Vorbelegung in _renderVorlagenBereich().
+    const zeitplanTypUiFeld = formular.querySelector('select[name="schedule_type_ui"]');
+    const zeitplanIntervallFeld = formular.querySelector('input[name="schedule_interval"]');
+    const zeitplanWochentagFeld = formular.querySelector('select[name="schedule_weekday"]');
+    const zeitplanTypUi = zeitplanTypUiFeld ? zeitplanTypUiFeld.value : "";
+
+    let scheduleType = "";
+    let scheduleInterval = null;
+    let scheduleWeekday = null;
+    if (zeitplanTypUi === "days") {
+      scheduleType = "days";
+      scheduleInterval = Math.max(1, Number(zeitplanIntervallFeld ? zeitplanIntervallFeld.value : 1) || 1);
+    } else if (zeitplanTypUi === "weekly_single") {
+      scheduleType = "weekly";
+      scheduleInterval = 1;
+      scheduleWeekday = Number(zeitplanWochentagFeld ? zeitplanWochentagFeld.value : 0);
+    } else if (zeitplanTypUi === "weekly_interval") {
+      scheduleType = "weekly";
+      scheduleInterval = Math.max(1, Number(zeitplanIntervallFeld ? zeitplanIntervallFeld.value : 1) || 1);
+      scheduleWeekday = Number(zeitplanWochentagFeld ? zeitplanWochentagFeld.value : 0);
+    }
+
     const formData = {
       name: daten.get("name"),
       description: daten.get("description") || "",
@@ -927,16 +1314,24 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     if (this._bearbeiteVorlageId) {
       // Beim Bearbeiten IMMER mitsenden - ein leerer Wert entfernt den
-      // Trigger dabei bewusst (siehe async_update_template).
+      // jeweiligen Trigger dabei bewusst (siehe async_update_template).
       formData.trigger_entity_id = triggerEntityId;
       formData.trigger_state = triggerState;
+      formData.schedule_type = scheduleType;
+      if (scheduleType) formData.schedule_interval = scheduleInterval;
+      if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
       this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
     } else {
       // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
-      // leerer String ist keine gültige Entity-ID und würde die
+      // leerer String ist kein gültiger Zeitplan-Typ und würde die
       // Service-Validierung von add_template fehlschlagen lassen.
       if (triggerEntityId) formData.trigger_entity_id = triggerEntityId;
       if (triggerState) formData.trigger_state = triggerState;
+      if (scheduleType) {
+        formData.schedule_type = scheduleType;
+        formData.schedule_interval = scheduleInterval;
+        if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
+      }
       this._vorlageAnlegen(formData);
     }
 
@@ -1021,6 +1416,48 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .reset-punkte-btn {
         font-size: 0.8em;
         padding: 4px 10px;
+      }
+      .rang-name-klickbar {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        user-select: none;
+      }
+      .verlauf-pfeil {
+        font-size: 0.7em;
+        color: var(--secondary-text-color);
+      }
+      .verlauf-bereich {
+        background: var(--secondary-background-color, rgba(0,0,0,0.03));
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--divider-color, #eee);
+      }
+      .verlauf-eintrag {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--divider-color, #eee);
+        font-size: 0.9em;
+      }
+      .verlauf-eintrag:last-child { border-bottom: none; }
+      .verlauf-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .verlauf-name { color: var(--primary-text-color); }
+      .verlauf-datum { font-size: 0.85em; color: var(--secondary-text-color); }
+      .verlauf-aktion {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .aufgaben-karte.wartend { opacity: 0.75; }
+      .punkte-badge-wartend {
+        background: var(--secondary-background-color, rgba(0,0,0,0.08));
+        color: var(--secondary-text-color);
       }
 
       .hinweis {
@@ -1211,6 +1648,49 @@ class AufgabenScoreboardPanel extends HTMLElement {
         border: 1px solid var(--divider-color, #ccc);
         background: var(--primary-background-color);
         color: var(--primary-text-color);
+      }
+      .trigger-entfernen-btn {
+        align-self: flex-start;
+        margin-top: 2px;
+      }
+      .zeitplan-feld {
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 6px;
+        padding: 10px 12px 12px;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .zeitplan-feld legend {
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+        padding: 0 4px;
+      }
+      .zeitplan-feld label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+      .zeitplan-intervall-feld {
+        flex-direction: row !important;
+        align-items: center;
+        gap: 8px !important;
+      }
+      .zeitplan-feld select,
+      .zeitplan-feld input[type="number"] {
+        font-family: inherit;
+        font-size: 1em;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--primary-background-color);
+        color: var(--primary-text-color);
+      }
+      .zeitplan-intervall-feld input[type="number"] {
+        width: 70px;
       }
       .vorlage-badges {
         display: flex;

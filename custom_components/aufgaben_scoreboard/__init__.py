@@ -12,12 +12,14 @@ Aufgaben dieser Datei:
     2. Die Sensor-Plattform (ein Sensor pro Home-Assistant-Benutzer)
        weiterleiten (siehe sensor.py).
     3. Die Home-Assistant-Services registrieren (add_task, remove_task,
-       assign_task, unassign_task, complete_task, reset_score), damit
-       diese in Automationen/Skripten UND von der Custom Card / dem
-       Sidebar-Panel aus aufgerufen werden können.
-    4. Die statischen Frontend-Dateien (Custom Card + Sidebar-Panel als
-       JavaScript-Module) unter einer festen URL bereitstellen und das
-       Sidebar-Panel bei Home Assistant registrieren.
+       assign_task, unassign_task, complete_task, approve_task,
+       reject_task, undo_completion, reset_score, ...), damit diese in
+       Automationen/Skripten UND vom Sidebar-Panel aus aufgerufen
+       werden können.
+    4. Die statischen Frontend-Dateien (Sidebar-Panel UND Custom Card)
+       unter einer festen URL bereitstellen, die Custom Card global für
+       alle Dashboards registrieren und das Sidebar-Panel bei Home
+       Assistant registrieren.
 """
 
 from __future__ import annotations
@@ -28,22 +30,26 @@ from pathlib import Path
 import voluptuous as vol
 
 from homeassistant.components.frontend import (
+    add_extra_js_url,
     async_register_built_in_panel,
     async_remove_panel,
-    add_extra_js_url,
 )
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import CoreState, HomeAssistant, ServiceCall
+from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
 
 from .const import (
     ATTR_ASSIGNED_TO,
+    ATTR_COMPLETION_ID,
     ATTR_DESCRIPTION,
     ATTR_MULTISCORING,
     ATTR_NAME,
+    ATTR_SCHEDULE_INTERVAL,
+    ATTR_SCHEDULE_TYPE,
+    ATTR_SCHEDULE_WEEKDAY,
     ATTR_SCORE,
     ATTR_TASK_ID,
     ATTR_TEMPLATE_ID,
@@ -58,15 +64,20 @@ from .const import (
     PANEL_TITLE,
     PANEL_URL_PATH,
     PLATFORMS,
+    SCHEDULE_TYPE_DAYS,
+    SCHEDULE_TYPE_WEEKLY,
     SERVICE_ADD_TASK,
     SERVICE_ADD_TEMPLATE,
+    SERVICE_APPROVE_TASK,
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
     SERVICE_CREATE_TASK_FROM_TEMPLATE,
+    SERVICE_REJECT_TASK,
     SERVICE_REMOVE_TASK,
     SERVICE_REMOVE_TEMPLATE,
     SERVICE_RESET_SCORE,
     SERVICE_UNASSIGN_TASK,
+    SERVICE_UNDO_COMPLETION,
     SERVICE_UPDATE_TASK,
     SERVICE_UPDATE_TEMPLATE,
 )
@@ -131,6 +142,14 @@ SCHEMA_COMPLETE_TASK = vol.Schema(
 SCHEMA_RESET_SCORE = vol.Schema({vol.Required(ATTR_USER_ID): cv.string})
 
 # -----------------------------------------------------------------------
+# Freigabe-Workflow
+# -----------------------------------------------------------------------
+
+SCHEMA_APPROVE_TASK = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
+SCHEMA_REJECT_TASK = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
+SCHEMA_UNDO_COMPLETION = vol.Schema({vol.Required(ATTR_COMPLETION_ID): cv.string})
+
+# -----------------------------------------------------------------------
 # Standardaufgaben (Vorlagen)
 # -----------------------------------------------------------------------
 
@@ -146,6 +165,12 @@ SCHEMA_ADD_TEMPLATE = vol.Schema(
         # ausgedrückt, nicht durch einen leeren Wert.
         vol.Optional(ATTR_TRIGGER_ENTITY_ID): cv.entity_id,
         vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+        # Zeitplan-Trigger (alle X Tage / jede bzw. alle X Wochen am
+        # Wochentag Y) - optional, unabhängig vom Entitäts-Trigger
+        # nutzbar. schedule_weekday: 0=Montag ... 6=Sonntag.
+        vol.Optional(ATTR_SCHEDULE_TYPE): vol.In([SCHEDULE_TYPE_DAYS, SCHEDULE_TYPE_WEEKLY]),
+        vol.Optional(ATTR_SCHEDULE_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(ATTR_SCHEDULE_WEEKDAY): vol.All(vol.Coerce(int), vol.Range(min=0, max=6)),
     }
 )
 
@@ -155,8 +180,8 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
         # Alle inhaltlichen Felder sind beim Bearbeiten optional - nur
         # tatsächlich übergebene Felder werden geändert (siehe
         # AufgabenScoreboardManager.async_update_template). Für die
-        # beiden Trigger-Felder gilt zusätzlich: ein LEERER String
-        # entfernt den Trigger bewusst (siehe dortige Docstring).
+        # Trigger-Felder gilt zusätzlich: ein LEERER String entfernt den
+        # jeweiligen Trigger bewusst (siehe dortige Docstring).
         vol.Optional(ATTR_NAME): cv.string,
         vol.Optional(ATTR_DESCRIPTION): cv.string,
         vol.Optional(ATTR_SCORE): vol.Coerce(int),
@@ -164,6 +189,9 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
         vol.Optional(ATTR_MULTISCORING): cv.boolean,
         vol.Optional(ATTR_TRIGGER_ENTITY_ID): vol.Any(cv.entity_id, ""),
         vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+        vol.Optional(ATTR_SCHEDULE_TYPE): vol.Any(SCHEDULE_TYPE_DAYS, SCHEDULE_TYPE_WEEKLY, ""),
+        vol.Optional(ATTR_SCHEDULE_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(ATTR_SCHEDULE_WEEKDAY): vol.All(vol.Coerce(int), vol.Range(min=0, max=6)),
     }
 )
 
@@ -200,6 +228,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Start der Integration funktioniert.
     manager.sync_trigger_listeners()
 
+    # Zeitplan-Trigger für Standardaufgaben (alle X Tage / jede bzw.
+    # alle X Wochen am Wochentag Y, falls konfiguriert) jetzt ebenfalls
+    # aktivieren - inkl. einmaliger Nachhol-Prüfung für den aktuellen Tag.
+    manager.async_setup_schedule()
+
     # ------------------------------------------------------------------
     # 2. Sensor-Plattform laden (ein Sensor pro Benutzer + Übersicht)
     # ------------------------------------------------------------------
@@ -227,12 +260,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if hass.state is CoreState.running:
         await _async_setup_frontend(hass)
     else:
+        # WICHTIG: hass.bus.async_listen_once() liefert einen Listener,
+        # der sich nach dem Feuern SELBST aus dem Event-Bus entfernt.
+        # Würde man das dabei zurückgegebene Unsub trotzdem noch unverändert
+        # an entry.async_on_unload() weiterreichen, versucht Home Assistant
+        # beim nächsten Entladen/Neuladen der Integration (falls das NACH
+        # dem HA-Start passiert), denselben - inzwischen bereits selbst
+        # entfernten - Listener ein zweites Mal zu entfernen. Das führt zu
+        # "Unable to remove unknown job listener" (ValueError) im Log.
+        # Daher: merken, ob der Listener schon gefeuert hat, und das
+        # Unsub beim Entladen nur dann noch aufrufen, wenn nicht.
+        listener_hat_gefeuert = False
+
         async def _async_setup_frontend_on_start(_event) -> None:
+            nonlocal listener_hat_gefeuert
+            listener_hat_gefeuert = True
             await _async_setup_frontend(hass)
 
-        entry.async_on_unload(
-            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_setup_frontend_on_start)
-        )
+        unsub_listener = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_setup_frontend_on_start)
+
+        @callback
+        def _async_listener_sicher_abmelden() -> None:
+            if not listener_hat_gefeuert:
+                unsub_listener()
+
+        entry.async_on_unload(_async_listener_sicher_abmelden)
 
     return True
 
@@ -255,6 +307,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_ASSIGN_TASK,
                 SERVICE_UNASSIGN_TASK,
                 SERVICE_COMPLETE_TASK,
+                SERVICE_APPROVE_TASK,
+                SERVICE_REJECT_TASK,
+                SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
                 SERVICE_ADD_TEMPLATE,
                 SERVICE_UPDATE_TEMPLATE,
@@ -363,6 +418,24 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
         await manager.async_complete_task(call.data[ATTR_TASK_ID], user_id)
 
+    async def handle_approve_task(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe freizugeben - abgelehnt.")
+            return
+        await manager.async_approve_task(call.data[ATTR_TASK_ID])
+
+    async def handle_reject_task(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe abzulehnen - abgelehnt.")
+            return
+        await manager.async_reject_task(call.data[ATTR_TASK_ID])
+
+    async def handle_undo_completion(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Erledigung zurückzunehmen - abgelehnt.")
+            return
+        await manager.async_undo_completion(call.data[ATTR_COMPLETION_ID])
+
     async def handle_reset_score(call: ServiceCall) -> None:
         if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, einen Punktestand zurückzusetzen - abgelehnt.")
@@ -381,6 +454,9 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             multiscoring=call.data.get(ATTR_MULTISCORING, False),
             trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
             trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+            schedule_type=call.data.get(ATTR_SCHEDULE_TYPE),
+            schedule_interval=call.data.get(ATTR_SCHEDULE_INTERVAL),
+            schedule_weekday=call.data.get(ATTR_SCHEDULE_WEEKDAY),
         )
 
     async def handle_update_template(call: ServiceCall) -> None:
@@ -396,6 +472,9 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             multiscoring=call.data.get(ATTR_MULTISCORING),
             trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
             trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+            schedule_type=call.data.get(ATTR_SCHEDULE_TYPE),
+            schedule_interval=call.data.get(ATTR_SCHEDULE_INTERVAL),
+            schedule_weekday=call.data.get(ATTR_SCHEDULE_WEEKDAY),
         )
 
     async def handle_remove_template(call: ServiceCall) -> None:
@@ -419,6 +498,11 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_TASK, handle_complete_task, schema=SCHEMA_COMPLETE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_RESET_SCORE, handle_reset_score, schema=SCHEMA_RESET_SCORE)
+    hass.services.async_register(DOMAIN, SERVICE_APPROVE_TASK, handle_approve_task, schema=SCHEMA_APPROVE_TASK)
+    hass.services.async_register(DOMAIN, SERVICE_REJECT_TASK, handle_reject_task, schema=SCHEMA_REJECT_TASK)
+    hass.services.async_register(
+        DOMAIN, SERVICE_UNDO_COMPLETION, handle_undo_completion, schema=SCHEMA_UNDO_COMPLETION
+    )
     hass.services.async_register(DOMAIN, SERVICE_ADD_TEMPLATE, handle_add_template, schema=SCHEMA_ADD_TEMPLATE)
     hass.services.async_register(
         DOMAIN, SERVICE_UPDATE_TEMPLATE, handle_update_template, schema=SCHEMA_UPDATE_TEMPLATE
@@ -459,18 +543,60 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
 
     # Statischen Pfad registrieren: alles unter /aufgaben_scoreboard_frontend/
     # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert.
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                FRONTEND_URL_BASE,
-                str(FRONTEND_DIR),
-                cache_headers=False,
-            )
-        ]
-    )
+    #
+    # WICHTIG: Wird die Integration neu geladen, OHNE dass Home Assistant
+    # komplett neu gestartet wurde, kann aiohttp beim erneuten
+    # Registrieren desselben Pfads mit einem RuntimeError ("Added route
+    # will never be executed, method GET is already registered")
+    # abbrechen - es gibt für den statischen Pfad (anders als beim Panel,
+    # siehe async_remove_panel() in async_unload_entry) kein Gegenstück
+    # zum Abmelden. Derselbe Fehler trat bereits konkret bei
+    # ha-parcel-tracking (behoben in v1.0.4) und ha-step-challenge auf;
+    # der Fix dort - gezielt NUR RuntimeError abfangen - wird hier 1:1
+    # übernommen, damit dieser eine, bekannte Fall den Rest der
+    # Frontend-Registrierung (Custom Card, Panel) nicht blockiert.
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    FRONTEND_URL_BASE,
+                    str(FRONTEND_DIR),
+                    cache_headers=False,
+                )
+            ]
+        )
+        _LOGGER.debug("Statischer Frontend-Pfad registriert: %s", FRONTEND_URL_BASE)
+    except RuntimeError:
+        _LOGGER.debug(
+            "Statischer Frontend-Pfad '%s' war bereits registriert (normal bei "
+            "einem Neuladen der Integration ohne Home-Assistant-Neustart).",
+            FRONTEND_URL_BASE,
+        )
 
     # Custom Card global für alle Dashboards verfügbar machen.
-    add_extra_js_url(hass, f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}")
+    #
+    # WICHTIG: Home Assistant lädt je nach Browser/Client entweder den
+    # "latest"-Modus (ES-Module, per import()) ODER den "es5"-Modus
+    # (klassisches <script>-Tag, für als "alt" erkannte Clients) - laut
+    # offizieller Doku werden beide NIE gleichzeitig geladen. Ohne
+    # explizite Angabe registriert add_extra_js_url() die Karte nur für
+    # den "latest"-Modus (es5=False). Wird ein Client (z. B. Chrome auf
+    # Android ohne aktivierten "Desktop-Modus") von HA fälschlich als
+    # ES5-Kandidat eingestuft, fehlt die Karte dort komplett -> "Custom
+    # element doesn't exist". Daher wird hier zusätzlich explizit auch
+    # für den ES5-Modus registriert; das Karten-JS selbst nutzt zwar
+    # moderne Syntax, läuft aber in jedem tatsächlich relevanten Browser
+    # unabhängig davon, über welches der beiden <script>-Ladeverfahren
+    # es eingebunden wird.
+    card_url = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
+    add_extra_js_url(hass, card_url)
+    add_extra_js_url(hass, card_url, es5=True)
+    _LOGGER.info(
+        "Aufgaben-Scoreboard: Custom Card unter %s registriert (sowohl für den "
+        "'latest'- als auch den 'es5'-Frontend-Modus; Direktaufruf zum Testen im "
+        "Browser möglich).",
+        card_url,
+    )
 
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
     # dass Home Assistant das angegebene JavaScript-Modul als eigenes
@@ -497,3 +623,4 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
         },
         require_admin=False,
     )
+    _LOGGER.info("Aufgaben-Scoreboard: Sidebar-Panel unter '/%s' registriert.", PANEL_URL_PATH)

@@ -137,9 +137,10 @@ unassign_task:
 complete_task:
   name: Aufgabe erledigen
   description: >-
-    Markiert eine Aufgabe als erledigt und schreibt dem Benutzer die
-    Punkte gut. Wird keine Benutzer-ID angegeben, wird der aufrufende
-    Benutzer verwendet.
+    Meldet eine Aufgabe als erledigt. Schreibt NOCH KEINE Punkte gut,
+    sondern setzt die Aufgabe in den Status "wartet auf Freigabe" - ein
+    Administrator muss sie über approve_task erst freigeben. Wird keine
+    Benutzer-ID angegeben, wird der aufrufende Benutzer verwendet.
   fields:
     task_id:
       name: Aufgaben-ID
@@ -153,6 +154,50 @@ complete_task:
         Optionale Benutzer-ID. Ohne Angabe wird der aufrufende Benutzer
         verwendet (Standardfall bei Nutzung über die Custom Card).
       required: false
+      selector:
+        text:
+
+approve_task:
+  name: Erledigung freigeben
+  description: >-
+    Gibt eine als erledigt gemeldete Aufgabe frei: schreibt dem
+    meldenden Benutzer die Punkte gut und trägt die Erledigung in die
+    Historie ein. Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe, die auf Freigabe wartet.
+      required: true
+      selector:
+        text:
+
+reject_task:
+  name: Erledigung ablehnen
+  description: >-
+    Lehnt eine als erledigt gemeldete Aufgabe ab - keine Punkte, die
+    Aufgabe wird wieder offen und kann erneut erledigt werden. Nur für
+    Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe, die auf Freigabe wartet.
+      required: true
+      selector:
+        text:
+
+undo_completion:
+  name: Erledigung zurücknehmen
+  description: >-
+    Nimmt eine bereits freigegebene Erledigung nachträglich zurück -
+    zieht die Punkte wieder ab und öffnet die ursprüngliche Aufgabe
+    erneut (sofern sie noch existiert). Nur innerhalb eines begrenzten
+    Zeitraums und einer begrenzten Anzahl letzter Erledigungen pro
+    Benutzer möglich. Nur für Administratoren.
+  fields:
+    completion_id:
+      name: Erledigungs-ID
+      description: Die eindeutige ID des Erledigungs-Eintrags (aus der Historie).
+      required: true
       selector:
         text:
 
@@ -172,8 +217,9 @@ add_template:
   description: >-
     Legt eine wiederverwendbare Standardaufgabe (Vorlage) an, aus der
     sich später jederzeit erneut konkrete Aufgaben erzeugen lassen -
-    manuell per Button oder automatisch per Entitäts-Trigger. Nur für
-    Administratoren.
+    manuell per Button, automatisch per Entitäts-Trigger und/oder
+    automatisch per Zeitplan (beide Trigger-Arten sind gleichzeitig
+    nutzbar). Nur für Administratoren.
   fields:
     name:
       name: Titel
@@ -237,14 +283,63 @@ add_template:
       required: false
       selector:
         text:
+    schedule_type:
+      name: Zeitplan-Art
+      description: >-
+        Optional, unabhängig vom Entitäts-Trigger nutzbar. "days" legt
+        alle X Tage eine Aufgabe an, "weekly" jede bzw. alle X Wochen an
+        einem festen Wochentag (siehe schedule_interval/schedule_weekday).
+        Duplikat-Schutz wie beim Entitäts-Trigger: keine neue Anlage,
+        solange noch eine offene Aufgabe aus dieser Vorlage existiert.
+      required: false
+      selector:
+        select:
+          options:
+            - label: "Alle X Tage"
+              value: "days"
+            - label: "Wöchentlich an festem Wochentag"
+              value: "weekly"
+    schedule_interval:
+      name: Zeitplan-Intervall
+      description: >-
+        Bei Zeitplan-Art "days": alle X Tage. Bei "weekly": alle X
+        Wochen (1 = jede Woche). Ohne Angabe: 1.
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 365
+          mode: box
+    schedule_weekday:
+      name: Zeitplan-Wochentag
+      description: Nur bei Zeitplan-Art "weekly" erforderlich (0 = Montag ... 6 = Sonntag).
+      required: false
+      selector:
+        select:
+          options:
+            - label: "Montag"
+              value: "0"
+            - label: "Dienstag"
+              value: "1"
+            - label: "Mittwoch"
+              value: "2"
+            - label: "Donnerstag"
+              value: "3"
+            - label: "Freitag"
+              value: "4"
+            - label: "Samstag"
+              value: "5"
+            - label: "Sonntag"
+              value: "6"
 
 update_template:
   name: Standardaufgabe bearbeiten
   description: >-
     Bearbeitet eine bestehende Standardaufgabe nachträglich. Nur
     angegebene Felder werden geändert. Bei trigger_entity_id/
-    trigger_state entfernt ein LEERER Wert den Trigger bewusst. Nur für
-    Administratoren.
+    trigger_state sowie schedule_type entfernt ein LEERER Wert den
+    jeweiligen Trigger bewusst. Nur für Administratoren.
   fields:
     template_id:
       name: Vorlagen-ID
@@ -292,6 +387,45 @@ update_template:
       required: false
       selector:
         text:
+    schedule_type:
+      name: Zeitplan-Art
+      description: Ein LEERER Wert entfernt den Zeitplan bewusst.
+      required: false
+      selector:
+        select:
+          options:
+            - label: "Alle X Tage"
+              value: "days"
+            - label: "Wöchentlich an festem Wochentag"
+              value: "weekly"
+    schedule_interval:
+      name: Zeitplan-Intervall
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 365
+          mode: box
+    schedule_weekday:
+      name: Zeitplan-Wochentag
+      required: false
+      selector:
+        select:
+          options:
+            - label: "Montag"
+              value: "0"
+            - label: "Dienstag"
+              value: "1"
+            - label: "Mittwoch"
+              value: "2"
+            - label: "Donnerstag"
+              value: "3"
+            - label: "Freitag"
+              value: "4"
+            - label: "Samstag"
+              value: "5"
+            - label: "Sonntag"
+              value: "6"
 
 remove_template:
   name: Standardaufgabe löschen
