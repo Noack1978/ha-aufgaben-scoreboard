@@ -16,9 +16,10 @@ Benutzern zugewiesen werden.
 - **Eigenes Sidebar-Panel** ("Aufgaben") in der Seitenleiste mit
   vollständiger Verwaltung (Anlegen, Zuweisen, Löschen – nur für
   Administratoren) sowie einer Rangliste aller Benutzer
-- **Custom Card** (`custom:aufgaben-scoreboard-card`), die in jedem
-  beliebigen Dashboard platziert werden kann und die eigenen offenen
-  Aufgaben samt "Erledigt"-Button zeigt
+- **Aufgaben-Übersicht im Dashboard** über eine native Markdown-Karte
+  (Vorlage weiter unten) – ohne Custom Element, dadurch ohne die
+  Kompatibilitätsprobleme, die eine frühere Custom Card mit sich
+  brachte (siehe Abschnitt weiter unten)
 - **Freigabe-Workflow**: Erledigungen warten auf Bestätigung durch einen
   Administrator, bevor Punkte gutgeschrieben werden – inkl. Verlauf pro
   Benutzer und nachträglicher Rücknahme-Möglichkeit (zeitlich/mengenmäßig
@@ -55,7 +56,6 @@ Benutzern zugewiesen werden.
            ├── manifest.json
            ├── ...
            └── frontend/
-               ├── aufgaben-scoreboard-card.js
                └── aufgaben-scoreboard-panel.js
    ```
 
@@ -72,11 +72,10 @@ Benutzern zugewiesen werden.
 3. Home Assistant neu starten und wie oben über **Einstellungen →
    Geräte & Dienste** hinzufügen.
 
-Nach der Einrichtung erscheinen automatisch:
-
-- ein neuer Eintrag **"Aufgaben"** in der Seitenleiste,
-- die Custom Card `custom:aufgaben-scoreboard-card` zur Verwendung in
-  eigenen Dashboards.
+Nach der Einrichtung erscheint automatisch ein neuer Eintrag
+**"Aufgaben"** in der Seitenleiste. Für eine Aufgaben-Übersicht direkt
+im Dashboard siehe den Abschnitt "Aufgaben im Dashboard anzeigen"
+weiter unten.
 
 ## 🖥️ Nutzung
 
@@ -170,17 +169,72 @@ Benutzer. In der Übersicht erscheint dadurch pro Benutzer eine eigene
 Karte; erledigt jemand seine, verschwindet nur diese – die Aufgaben der
 übrigen zugewiesenen Benutzer bleiben unberührt bestehen.
 
-### Custom Card im Dashboard
+### Aufgaben im Dashboard anzeigen (Markdown-Karte)
 
-Über den Dashboard-Editor eine neue Karte hinzufügen und
-`Aufgaben-Scoreboard Karte` auswählen, oder per YAML:
+Es gab bis Version 1.4.0 eine eigene Custom Card
+(`custom:aufgaben-scoreboard-card`) für normale Dashboards. Sie wurde
+entfernt, nachdem sie wiederholt - trotz mehrerer gezielter Fixes - im
+Kartenauswahl-Dialog mit `Custom element doesn't exist` bzw. einem
+endlos hängenden Ladekreis fehlschlug. Die genaue Ursache ließ sich
+trotz umfangreicher Diagnose (Log-Analyse, Ausschluss von `browser_mod`
+und `lovelace-header-cards` als Auslöser) nicht abschließend klären.
+
+Stattdessen lässt sich eine Übersicht aller offenen Aufgaben mit einer
+**nativen Markdown-Karte** abbilden - kein Custom Element, keine
+zusätzliche JavaScript-Registrierung, dadurch von den oben genannten
+Problemen nicht betroffen. Neue Karte → **Markdown** → in den
+YAML-Modus wechseln und folgenden Code einfügen:
 
 ```yaml
-type: custom:aufgaben-scoreboard-card
+type: markdown
+title: 📋 Alle offenen Aufgaben
+content: |
+  {% set aufgaben = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'offene_aufgaben') %}
+  {% set benutzer_sensoren = states.sensor | selectattr('attributes.user_id', 'defined') | list %}
+  {%- if not aufgaben %}
+  Aktuell keine offenen Aufgaben. 🎉
+  {%- else %}
+  **{{ aufgaben | length }} offene Aufgabe(n)**
+
+  | Aufgabe | Punkte | Zuständig |
+  | --- | --- | --- |
+  {% for aufgabe in aufgaben | sort(attribute='name') -%}
+  {%- set ns = namespace(namen=[]) -%}
+  {%- for uid in aufgabe.assigned_to -%}
+  {%- for b in benutzer_sensoren -%}
+  {%- if b.attributes.user_id == uid -%}
+  {%- set ns.namen = ns.namen + [b.name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  | {{ aufgabe.name }}{% if aufgabe.description %} ({{ aufgabe.description }}){% endif %} | +{{ aufgabe.score }} | {{ ns.namen | join(', ') if ns.namen else 'Alle Benutzer' }} |
+  {% endfor -%}
+  {%- endif %}
 ```
 
-Die Karte benötigt keine weitere Konfiguration – sie erkennt den
-angemeldeten Benutzer automatisch.
+**Hinweis zur Entity-ID:** `sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer`
+ist die Entity-ID des Übersichts-Sensors. Falls sie bei dir abweicht
+(z. B. durch ein Namenskollisions-Suffix), in **Entwicklerwerkzeuge →
+Zustände** nach "Offene Aufgaben" suchen und die erste Zeile im obigen
+Code entsprechend anpassen.
+
+**Optional - Spaltenbreiten anpassen:** Falls [`card_mod`](https://github.com/thomasloven/lovelace-card-mod)
+installiert ist, lässt sich die Tabellenbreite pro Spalte festlegen:
+
+```yaml
+card_mod:
+  style:
+    ha-markdown$: |
+      table {
+        table-layout: fixed;
+        width: 100%;
+      }
+      th:nth-child(1), td:nth-child(1) { width: 55%; }
+      th:nth-child(2), td:nth-child(2) { width: 15%; }
+      th:nth-child(3), td:nth-child(3) { width: 30%; }
+```
+
+Die Prozentwerte nach Bedarf anpassen (sollten zusammen ~100% ergeben).
 
 ### Aufgaben per Automation/Skript anlegen
 
@@ -240,7 +294,6 @@ custom_components/aufgaben_scoreboard/
 ├── services.yaml         # Service-Beschreibungen für die HA-UI
 ├── strings.json / translations/  # Übersetzungen
 └── frontend/
-    ├── aufgaben-scoreboard-card.js    # Custom Card fürs Dashboard
     └── aufgaben-scoreboard-panel.js   # Sidebar-Panel (volle Verwaltung)
 ```
 
