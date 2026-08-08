@@ -190,12 +190,6 @@ INFO ... Aufgaben-Scoreboard: Custom Card unter .../aufgaben-scoreboard-card.js 
 INFO ... Aufgaben-Scoreboard: Sidebar-Panel unter '/aufgaben-scoreboard' registriert.
 ```
 
-**Workaround:** Dashboard-Seite hart neu laden (nicht nur die
-Integration neu laden), oder testweise `browser_mod` kurzzeitig
-deaktivieren, um zu bestätigen, dass es sich um dieses bekannte Problem
-handelt. Ein Fix müsste in `browser_mod` selbst erfolgen; der oben
-verlinkte Issue kann zur Verfolgung des Status beobachtet werden.
-
 ## 🗂️ Datenspeicherung
 
 Alle Aufgaben, Zuweisungen, Punktestände und der Erledigungsverlauf
