@@ -16,10 +16,15 @@ Aufgaben dieser Datei:
        reject_task, undo_completion, reset_score, ...), damit diese in
        Automationen/Skripten UND vom Sidebar-Panel aus aufgerufen
        werden können.
-    4. Die statischen Frontend-Dateien (Sidebar-Panel UND Custom Card)
-       unter einer festen URL bereitstellen, die Custom Card global für
-       alle Dashboards registrieren und das Sidebar-Panel bei Home
-       Assistant registrieren.
+    4. Die statische Frontend-Datei des Sidebar-Panels unter einer
+       festen URL bereitstellen und das Panel bei Home Assistant
+       registrieren.
+
+    Hinweis: Es gab bis Version 1.4.0 zusätzlich eine Custom Card für
+    normale Dashboards. Sie wurde entfernt, siehe Docstring von
+    _async_setup_frontend() für den Hintergrund. Eine Alternative für
+    eine Aufgaben-Übersicht im Dashboard (Markdown-Karte, kein Custom
+    Element) steht in der README.
 """
 
 from __future__ import annotations
@@ -30,7 +35,6 @@ from pathlib import Path
 import voluptuous as vol
 
 from homeassistant.components.frontend import (
-    add_extra_js_url,
     async_register_built_in_panel,
     async_remove_panel,
 )
@@ -56,7 +60,6 @@ from .const import (
     ATTR_TRIGGER_ENTITY_ID,
     ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
-    CARD_JS_FILENAME,
     DOMAIN,
     FRONTEND_URL_BASE,
     PANEL_ICON,
@@ -85,8 +88,8 @@ from .manager import AufgabenScoreboardManager
 
 _LOGGER = logging.getLogger(__name__)
 
-# Verzeichnis, in dem die JavaScript-Dateien für Panel und Custom Card
-# innerhalb dieser Integration liegen.
+# Verzeichnis, in dem die JavaScript-Datei des Panels innerhalb dieser
+# Integration liegt.
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
@@ -134,7 +137,7 @@ SCHEMA_COMPLETE_TASK = vol.Schema(
     {
         vol.Required(ATTR_TASK_ID): cv.string,
         # user_id optional: fehlt er, wird der aufrufende Benutzer
-        # verwendet (praktisch für die Custom Card).
+        # verwendet (praktisch beim Aufruf über das Panel).
         vol.Optional(ATTR_USER_ID): cv.string,
     }
 )
@@ -244,7 +247,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _async_register_services(hass, manager)
 
     # ------------------------------------------------------------------
-    # 4. Frontend (Custom Card + Sidebar-Panel) registrieren
+    # 4. Frontend (Sidebar-Panel) registrieren
     #
     # WICHTIG: async_register_static_paths() und
     # async_register_built_in_panel() dürfen erst aufgerufen werden,
@@ -397,8 +400,8 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
     async def handle_complete_task(call: ServiceCall) -> None:
         # Wird kein user_id mitgegeben, wird der aufrufende Benutzer
-        # verwendet - das ist der Normalfall bei Nutzung über die
-        # Custom Card / das Sidebar-Panel.
+        # verwendet - das ist der Normalfall bei Nutzung über das
+        # Sidebar-Panel.
         user_id = call.data.get(ATTR_USER_ID) or call.context.user_id
         if not user_id:
             _LOGGER.error(
@@ -520,24 +523,27 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
 async def _async_setup_frontend(hass: HomeAssistant) -> None:
     """
-    Stellt die JavaScript-Dateien (Custom Card + Panel) über einen
-    statischen HTTP-Pfad bereit und registriert:
-      - die Custom Card global (add_extra_js_url), damit sie in JEDER
-        Dashboard-Ansicht per "type: custom:aufgaben-scoreboard-card"
-        verwendet werden kann, ohne dass der Benutzer manuell eine
-        Lovelace-Ressource hinzufügen muss.
-      - ein eigenes Panel in der Seitenleiste, das die volle
-        Aufgabenübersicht (inkl. Admin-Funktionen) als eigene Seite
-        zeigt.
+    Stellt die JavaScript-Datei des Sidebar-Panels über einen statischen
+    HTTP-Pfad bereit und registriert das Panel bei Home Assistant.
+
+    Hinweis: Es gab bis Version 1.4.0 zusätzlich eine Custom Card
+    (custom:aufgaben-scoreboard-card) für die Verwendung in normalen
+    Dashboards. Sie wurde entfernt, nachdem sie wiederholt (auch nach
+    mehreren gezielten Fixes) im Kartenauswahl-Dialog mit "Custom
+    element doesn't exist" bzw. einem endlos hängenden Ladekreis
+    fehlschlug - die genaue Ursache ließ sich trotz umfangreicher
+    Diagnose (Log-Analyse, Ausschluss von browser_mod/
+    lovelace-header-cards als Auslöser) nicht abschließend klären. Für
+    eine Aufgaben-Übersicht im Dashboard siehe stattdessen die
+    Markdown-Karten-Vorlage in der README - sie kommt ohne Custom
+    Element aus und ist davon nicht betroffen.
     """
-    card_pfad = FRONTEND_DIR / CARD_JS_FILENAME
     panel_pfad = FRONTEND_DIR / PANEL_JS_FILENAME
 
-    if not card_pfad.exists() or not panel_pfad.exists():
+    if not panel_pfad.exists():
         _LOGGER.error(
-            "Frontend-Dateien der Integration fehlen (%s). "
-            "Custom Card und Sidebar-Panel stehen nicht zur Verfügung.",
-            FRONTEND_DIR,
+            "Frontend-Datei des Sidebar-Panels fehlt (%s). Das Panel steht nicht zur Verfügung.",
+            panel_pfad,
         )
         return
 
@@ -553,8 +559,8 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
     # zum Abmelden. Derselbe Fehler trat bereits konkret bei
     # ha-parcel-tracking (behoben in v1.0.4) und ha-step-challenge auf;
     # der Fix dort - gezielt NUR RuntimeError abfangen - wird hier 1:1
-    # übernommen, damit dieser eine, bekannte Fall den Rest der
-    # Frontend-Registrierung (Custom Card, Panel) nicht blockiert.
+    # übernommen, damit dieser eine, bekannte Fall die Panel-Registrierung
+    # nicht blockiert.
     try:
         await hass.http.async_register_static_paths(
             [
@@ -572,31 +578,6 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
             "einem Neuladen der Integration ohne Home-Assistant-Neustart).",
             FRONTEND_URL_BASE,
         )
-
-    # Custom Card global für alle Dashboards verfügbar machen.
-    #
-    # WICHTIG: Home Assistant lädt je nach Browser/Client entweder den
-    # "latest"-Modus (ES-Module, per import()) ODER den "es5"-Modus
-    # (klassisches <script>-Tag, für als "alt" erkannte Clients) - laut
-    # offizieller Doku werden beide NIE gleichzeitig geladen. Ohne
-    # explizite Angabe registriert add_extra_js_url() die Karte nur für
-    # den "latest"-Modus (es5=False). Wird ein Client (z. B. Chrome auf
-    # Android ohne aktivierten "Desktop-Modus") von HA fälschlich als
-    # ES5-Kandidat eingestuft, fehlt die Karte dort komplett -> "Custom
-    # element doesn't exist". Daher wird hier zusätzlich explizit auch
-    # für den ES5-Modus registriert; das Karten-JS selbst nutzt zwar
-    # moderne Syntax, läuft aber in jedem tatsächlich relevanten Browser
-    # unabhängig davon, über welches der beiden <script>-Ladeverfahren
-    # es eingebunden wird.
-    card_url = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
-    add_extra_js_url(hass, card_url)
-    add_extra_js_url(hass, card_url, es5=True)
-    _LOGGER.info(
-        "Aufgaben-Scoreboard: Custom Card unter %s registriert (sowohl für den "
-        "'latest'- als auch den 'es5'-Frontend-Modus; Direktaufruf zum Testen im "
-        "Browser möglich).",
-        card_url,
-    )
 
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
     # dass Home Assistant das angegebene JavaScript-Modul als eigenes

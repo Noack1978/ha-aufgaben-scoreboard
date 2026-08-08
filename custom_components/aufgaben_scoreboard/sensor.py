@@ -134,8 +134,9 @@ class BenutzerPunkteSensor(_BasisSensor):
         - erledigte_aufgaben: Die letzten erledigten (freigegebenen)
           Aufgaben dieses Benutzers (neueste zuerst), jeweils mit einem
           "ruecknehmbar"-Flag für die Rücknahme-Funktion.
-        - user_id: Die interne Home-Assistant-Benutzer-ID (wird von der
-          Custom Card benötigt, um Service-Aufrufe korrekt zuzuordnen).
+        - user_id: Die interne Home-Assistant-Benutzer-ID (wird vom
+          Sidebar-Panel benötigt, um Sensoren Benutzern zuzuordnen und
+          Service-Aufrufe korrekt zu adressieren).
     """
 
     _attr_icon = "mdi:star-check-outline"
