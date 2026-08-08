@@ -1092,7 +1092,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
       btn.addEventListener("click", (ev) => {
         const userId = ev.target.getAttribute("data-user-id");
         const userName = ev.target.getAttribute("data-user-name");
-        if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen?`)) {
+        if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen? Der Erledigungs-Verlauf wird dabei ebenfalls gelöscht.`)) {
           this._punktestandZuruecksetzen(userId);
         }
       });
