@@ -247,14 +247,31 @@ class AufgabenScoreboardCard extends HTMLElement {
   }
 }
 
-customElements.define("aufgaben-scoreboard-card", AufgabenScoreboardCard);
+// WICHTIG: Diese Datei wird von Home Assistant sowohl für den "latest"-
+// (ES-Modul) als auch für den "es5"-Modus registriert (siehe __init__.py,
+// add_extra_js_url() mit und ohne es5=True). Laut Home-Assistant-Doku
+// wird "nie beides gleichzeitig geladen" - als zusätzliche Absicherung
+// gegen den Fall, dass die Datei aus irgendeinem Grund (z. B. Caching,
+// Dashboard-Wechsel) trotzdem zweimal ausgeführt wird, wird die
+// Registrierung hier defensiv gegen Duplikate abgesichert. Ohne diese
+// Prüfung würde ein zweiter customElements.define()-Aufruf mit einer
+// nicht abgefangenen DOMException abbrechen - und zwar VOR der letzten
+// Zeile dieser Datei (window.customCards.push), wodurch die Karte in der
+// Kartenauswahl nicht mehr auftauchen würde, obwohl sie technisch bereits
+// registriert ist.
+if (!customElements.get("aufgaben-scoreboard-card")) {
+  customElements.define("aufgaben-scoreboard-card", AufgabenScoreboardCard);
+}
 
 // Registriert die Karte im grafischen Karten-Auswahldialog von Lovelace,
-// damit sie dort mit Namen/Beschreibung/Icon auffindbar ist.
+// damit sie dort mit Namen/Beschreibung/Icon auffindbar ist. Ebenfalls
+// defensiv gegen doppelte Einträge abgesichert (siehe Kommentar oben).
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "aufgaben-scoreboard-card",
-  name: "Aufgaben-Scoreboard Karte",
-  description: "Zeigt deine offenen Aufgaben und deinen Punktestand.",
-  preview: false,
-});
+if (!window.customCards.some((karte) => karte.type === "aufgaben-scoreboard-card")) {
+  window.customCards.push({
+    type: "aufgaben-scoreboard-card",
+    name: "Aufgaben-Scoreboard Karte",
+    description: "Zeigt deine offenen Aufgaben und deinen Punktestand.",
+    preview: false,
+  });
+}
