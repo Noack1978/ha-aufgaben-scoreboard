@@ -129,8 +129,11 @@ class BenutzerPunkteSensor(_BasisSensor):
     Attribute:
         - offene_aufgaben: Liste der für diesen Benutzer offenen Aufgaben
           (explizit zugewiesen oder für alle freigegeben).
-        - erledigte_aufgaben: Die letzten erledigten Aufgaben dieses
-          Benutzers (neueste zuerst).
+        - wartende_aufgaben: Aufgaben, die dieser Benutzer selbst als
+          erledigt gemeldet hat und die noch auf Admin-Freigabe warten.
+        - erledigte_aufgaben: Die letzten erledigten (freigegebenen)
+          Aufgaben dieses Benutzers (neueste zuerst), jeweils mit einem
+          "ruecknehmbar"-Flag für die Rücknahme-Funktion.
         - user_id: Die interne Home-Assistant-Benutzer-ID (wird von der
           Custom Card benötigt, um Service-Aufrufe korrekt zuzuordnen).
     """
@@ -160,6 +163,7 @@ class BenutzerPunkteSensor(_BasisSensor):
         return {
             "user_id": self._user_id,
             "offene_aufgaben": self._manager.get_open_tasks_for_user(self._user_id),
+            "wartende_aufgaben": self._manager.get_pending_tasks_for_user(self._user_id),
             "erledigte_aufgaben": self._manager.get_completed_tasks_for_user(self._user_id),
         }
 
@@ -187,6 +191,7 @@ class AlleOffenenAufgabenSensor(_BasisSensor):
     def extra_state_attributes(self) -> dict:
         return {
             "offene_aufgaben": self._manager.get_all_open_tasks(),
+            "wartende_aufgaben": self._manager.get_all_pending_tasks(),
             "alle_aufgaben": self._manager.get_all_tasks(),
             "vorlagen": self._manager.get_all_templates(),
         }

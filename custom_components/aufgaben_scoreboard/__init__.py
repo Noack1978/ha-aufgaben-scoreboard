@@ -12,20 +12,14 @@ Aufgaben dieser Datei:
     2. Die Sensor-Plattform (ein Sensor pro Home-Assistant-Benutzer)
        weiterleiten (siehe sensor.py).
     3. Die Home-Assistant-Services registrieren (add_task, remove_task,
-       assign_task, unassign_task, complete_task, reset_score), damit
-       diese in Automationen/Skripten UND vom Sidebar-Panel aus
-       aufgerufen werden können.
-    4. Die statische Frontend-Datei (Sidebar-Panel als JavaScript-Modul)
-       unter einer festen URL bereitstellen und das Sidebar-Panel bei
-       Home Assistant registrieren.
-
-    Hinweis: Eine separate Dashboard-Karte ("Custom Card") gab es bis
-    Version 1.3.0, wurde aber wieder entfernt - sie geriet in
-    Kombination mit browser_mod's "scoped custom element registry" in
-    Konflikt mit Home Assistants Kartenauswahl-Dialog (siehe
-    https://github.com/thomasloven/hass-browser_mod/issues/1056). Die
-    komplette Aufgabenverwaltung (inkl. "Meine Aufgaben") steht
-    weiterhin über das Sidebar-Panel zur Verfügung.
+       assign_task, unassign_task, complete_task, approve_task,
+       reject_task, undo_completion, reset_score, ...), damit diese in
+       Automationen/Skripten UND vom Sidebar-Panel aus aufgerufen
+       werden können.
+    4. Die statischen Frontend-Dateien (Sidebar-Panel UND Custom Card)
+       unter einer festen URL bereitstellen, die Custom Card global für
+       alle Dashboards registrieren und das Sidebar-Panel bei Home
+       Assistant registrieren.
 """
 
 from __future__ import annotations
@@ -49,6 +43,7 @@ import homeassistant.helpers.config_validation as cv
 
 from .const import (
     ATTR_ASSIGNED_TO,
+    ATTR_COMPLETION_ID,
     ATTR_DESCRIPTION,
     ATTR_MULTISCORING,
     ATTR_NAME,
@@ -73,13 +68,16 @@ from .const import (
     SCHEDULE_TYPE_WEEKLY,
     SERVICE_ADD_TASK,
     SERVICE_ADD_TEMPLATE,
+    SERVICE_APPROVE_TASK,
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
     SERVICE_CREATE_TASK_FROM_TEMPLATE,
+    SERVICE_REJECT_TASK,
     SERVICE_REMOVE_TASK,
     SERVICE_REMOVE_TEMPLATE,
     SERVICE_RESET_SCORE,
     SERVICE_UNASSIGN_TASK,
+    SERVICE_UNDO_COMPLETION,
     SERVICE_UPDATE_TASK,
     SERVICE_UPDATE_TEMPLATE,
 )
@@ -142,6 +140,14 @@ SCHEMA_COMPLETE_TASK = vol.Schema(
 )
 
 SCHEMA_RESET_SCORE = vol.Schema({vol.Required(ATTR_USER_ID): cv.string})
+
+# -----------------------------------------------------------------------
+# Freigabe-Workflow
+# -----------------------------------------------------------------------
+
+SCHEMA_APPROVE_TASK = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
+SCHEMA_REJECT_TASK = vol.Schema({vol.Required(ATTR_TASK_ID): cv.string})
+SCHEMA_UNDO_COMPLETION = vol.Schema({vol.Required(ATTR_COMPLETION_ID): cv.string})
 
 # -----------------------------------------------------------------------
 # Standardaufgaben (Vorlagen)
@@ -301,6 +307,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_ASSIGN_TASK,
                 SERVICE_UNASSIGN_TASK,
                 SERVICE_COMPLETE_TASK,
+                SERVICE_APPROVE_TASK,
+                SERVICE_REJECT_TASK,
+                SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
                 SERVICE_ADD_TEMPLATE,
                 SERVICE_UPDATE_TEMPLATE,
@@ -409,6 +418,24 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
         await manager.async_complete_task(call.data[ATTR_TASK_ID], user_id)
 
+    async def handle_approve_task(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe freizugeben - abgelehnt.")
+            return
+        await manager.async_approve_task(call.data[ATTR_TASK_ID])
+
+    async def handle_reject_task(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Aufgabe abzulehnen - abgelehnt.")
+            return
+        await manager.async_reject_task(call.data[ATTR_TASK_ID])
+
+    async def handle_undo_completion(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Erledigung zurückzunehmen - abgelehnt.")
+            return
+        await manager.async_undo_completion(call.data[ATTR_COMPLETION_ID])
+
     async def handle_reset_score(call: ServiceCall) -> None:
         if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, einen Punktestand zurückzusetzen - abgelehnt.")
@@ -471,6 +498,11 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_TASK, handle_complete_task, schema=SCHEMA_COMPLETE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_RESET_SCORE, handle_reset_score, schema=SCHEMA_RESET_SCORE)
+    hass.services.async_register(DOMAIN, SERVICE_APPROVE_TASK, handle_approve_task, schema=SCHEMA_APPROVE_TASK)
+    hass.services.async_register(DOMAIN, SERVICE_REJECT_TASK, handle_reject_task, schema=SCHEMA_REJECT_TASK)
+    hass.services.async_register(
+        DOMAIN, SERVICE_UNDO_COMPLETION, handle_undo_completion, schema=SCHEMA_UNDO_COMPLETION
+    )
     hass.services.async_register(DOMAIN, SERVICE_ADD_TEMPLATE, handle_add_template, schema=SCHEMA_ADD_TEMPLATE)
     hass.services.async_register(
         DOMAIN, SERVICE_UPDATE_TEMPLATE, handle_update_template, schema=SCHEMA_UPDATE_TEMPLATE

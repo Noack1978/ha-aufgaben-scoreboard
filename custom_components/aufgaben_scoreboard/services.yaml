@@ -137,9 +137,10 @@ unassign_task:
 complete_task:
   name: Aufgabe erledigen
   description: >-
-    Markiert eine Aufgabe als erledigt und schreibt dem Benutzer die
-    Punkte gut. Wird keine Benutzer-ID angegeben, wird der aufrufende
-    Benutzer verwendet.
+    Meldet eine Aufgabe als erledigt. Schreibt NOCH KEINE Punkte gut,
+    sondern setzt die Aufgabe in den Status "wartet auf Freigabe" - ein
+    Administrator muss sie über approve_task erst freigeben. Wird keine
+    Benutzer-ID angegeben, wird der aufrufende Benutzer verwendet.
   fields:
     task_id:
       name: Aufgaben-ID
@@ -153,6 +154,50 @@ complete_task:
         Optionale Benutzer-ID. Ohne Angabe wird der aufrufende Benutzer
         verwendet (Standardfall bei Nutzung über die Custom Card).
       required: false
+      selector:
+        text:
+
+approve_task:
+  name: Erledigung freigeben
+  description: >-
+    Gibt eine als erledigt gemeldete Aufgabe frei: schreibt dem
+    meldenden Benutzer die Punkte gut und trägt die Erledigung in die
+    Historie ein. Nur für Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe, die auf Freigabe wartet.
+      required: true
+      selector:
+        text:
+
+reject_task:
+  name: Erledigung ablehnen
+  description: >-
+    Lehnt eine als erledigt gemeldete Aufgabe ab - keine Punkte, die
+    Aufgabe wird wieder offen und kann erneut erledigt werden. Nur für
+    Administratoren.
+  fields:
+    task_id:
+      name: Aufgaben-ID
+      description: Die eindeutige ID der Aufgabe, die auf Freigabe wartet.
+      required: true
+      selector:
+        text:
+
+undo_completion:
+  name: Erledigung zurücknehmen
+  description: >-
+    Nimmt eine bereits freigegebene Erledigung nachträglich zurück -
+    zieht die Punkte wieder ab und öffnet die ursprüngliche Aufgabe
+    erneut (sofern sie noch existiert). Nur innerhalb eines begrenzten
+    Zeitraums und einer begrenzten Anzahl letzter Erledigungen pro
+    Benutzer möglich. Nur für Administratoren.
+  fields:
+    completion_id:
+      name: Erledigungs-ID
+      description: Die eindeutige ID des Erledigungs-Eintrags (aus der Historie).
+      required: true
       selector:
         text:
 
