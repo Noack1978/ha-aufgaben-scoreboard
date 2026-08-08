@@ -40,6 +40,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // DOM, was die Formular-Zustand-Sicherung (siehe unten) vereinfacht.
     this._vorlagenFormularOffen = false;
     this._bearbeiteVorlageId = null;
+    // Merkt sich, für welchen Benutzer (falls überhaupt) der
+    // Erledigungs-Verlauf in der Rangliste gerade aufgeklappt ist -
+    // null = keiner. Immer nur einer gleichzeitig aufgeklappt.
+    this._aufgeklappterVerlaufUserId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -156,6 +160,18 @@ class AufgabenScoreboardPanel extends HTMLElement {
       task_id: taskId,
       user_id: userId,
     });
+  }
+
+  _aufgabeFreigeben(taskId) {
+    this._hass.callService("aufgaben_scoreboard", "approve_task", { task_id: taskId });
+  }
+
+  _aufgabeAblehnen(taskId) {
+    this._hass.callService("aufgaben_scoreboard", "reject_task", { task_id: taskId });
+  }
+
+  _erledigungRueckgaengig(completionId) {
+    this._hass.callService("aufgaben_scoreboard", "undo_completion", { completion_id: completionId });
   }
 
   _aufgabeLoeschen(taskId) {
@@ -326,25 +342,32 @@ class AufgabenScoreboardPanel extends HTMLElement {
           ${benutzerSensoren
             .slice()
             .sort((a, b) => Number(b.zustand.state) - Number(a.zustand.state))
-            .map(
-              (b) => `
-              <div class="rang-eintrag ${b.zustand.attributes.user_id === eigeneUserId ? "ich" : ""}">
-                <span class="rang-name">${this._escape(b.zustand.attributes.friendly_name || b.entityId)}</span>
+            .map((b) => {
+              const userId = b.zustand.attributes.user_id;
+              const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
+              const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
+              return `
+              <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
+                <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
+                  ${this._escape(b.zustand.attributes.friendly_name || b.entityId)}
+                  <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
+                </span>
                 <div class="rang-rechts">
                   <span class="rang-punkte">${b.zustand.state} Pkt.</span>
                   ${
                     istAdmin
                       ? `<button
                           class="btn-secondary reset-punkte-btn"
-                          data-user-id="${b.zustand.attributes.user_id}"
+                          data-user-id="${userId}"
                           data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
                           title="Punktestand zurücksetzen"
                         >Zurücksetzen</button>`
                       : ""
                   }
                 </div>
-              </div>`
-            )
+              </div>
+              ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}`;
+            })
             .join("")}
         </div>
 
@@ -353,6 +376,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
           ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
         </div>
 
+        ${istAdmin ? this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
@@ -384,12 +408,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
   _renderEigeneAufgaben(benutzerSensoren, eigeneUserId) {
     const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
     const aufgaben = eigener ? eigener.zustand.attributes.offene_aufgaben : [];
+    const wartende = eigener ? eigener.zustand.attributes.wartende_aufgaben : [];
 
-    if (!aufgaben || aufgaben.length === 0) {
-      return `<div class="hinweis">Keine offenen Aufgaben für dich. 🎉</div>`;
-    }
-
-    return `
+    const offenListe =
+      !aufgaben || aufgaben.length === 0
+        ? `<div class="hinweis">Keine offenen Aufgaben für dich. 🎉</div>`
+        : `
       <div class="aufgaben-liste">
         ${aufgaben
           .map(
@@ -406,6 +430,128 @@ class AufgabenScoreboardPanel extends HTMLElement {
           </div>`
           )
           .join("")}
+      </div>
+    `;
+
+    const wartendListe =
+      wartende && wartende.length > 0
+        ? `
+      <div class="aufgaben-liste wartend-liste">
+        ${wartende
+          .map(
+            (a) => `
+          <div class="aufgaben-karte wartend">
+            <div class="aufgaben-info">
+              <div class="aufgaben-name">${this._escape(a.name)}</div>
+              <div class="aufgaben-beschreibung">⏳ Wartet auf Freigabe durch einen Administrator</div>
+            </div>
+            <div class="aufgaben-aktion">
+              <span class="punkte-badge punkte-badge-wartend">+${a.score}</span>
+            </div>
+          </div>`
+          )
+          .join("")}
+      </div>
+    `
+        : "";
+
+    return offenListe + wartendListe;
+  }
+
+  /**
+   * Rendert den aufklappbaren Erledigungs-Verlauf eines einzelnen
+   * Benutzers unterhalb seines Rangliste-Eintrags. Das "ruecknehmbar"-
+   * Flag jedes Eintrags kommt bereits fertig berechnet vom Server
+   * (siehe AufgabenScoreboardManager.get_completed_tasks_for_user) -
+   * das Frontend muss die Zeit-/Mengen-Grenze nicht selbst nachbauen.
+   */
+  _renderVerlauf(verlauf, istAdmin) {
+    if (!verlauf || verlauf.length === 0) {
+      return `<div class="verlauf-bereich"><div class="hinweis-klein">Noch keine erledigten Aufgaben.</div></div>`;
+    }
+
+    return `
+      <div class="verlauf-bereich">
+        ${verlauf
+          .map(
+            (eintrag) => `
+          <div class="verlauf-eintrag">
+            <div class="verlauf-info">
+              <span class="verlauf-name">${this._escape(eintrag.task_name)}</span>
+              <span class="verlauf-datum">${this._formatiereDatum(eintrag.completed_at)}</span>
+            </div>
+            <div class="verlauf-aktion">
+              <span class="punkte-badge">+${eintrag.score}</span>
+              ${
+                istAdmin
+                  ? eintrag.ruecknehmbar
+                    ? `<button class="btn-danger rueckgaengig-btn" data-completion-id="${eintrag.completion_id}" data-task-name="${this._escape(eintrag.task_name)}">Rückgängig</button>`
+                    : `<span class="hinweis-klein">nicht mehr rücknehmbar</span>`
+                  : ""
+              }
+            </div>
+          </div>`
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  /** Formatiert einen ISO-8601-Zeitstempel als lesbares Datum (TT.MM.JJJJ, hh:mm). */
+  _formatiereDatum(isoZeitstempel) {
+    try {
+      const datum = new Date(isoZeitstempel);
+      return datum.toLocaleString("de-DE", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (fehler) {
+      return isoZeitstempel;
+    }
+  }
+
+  /**
+   * Admin-Bereich "Wartet auf Freigabe": alle Aufgaben, die irgendein
+   * Benutzer als erledigt gemeldet hat, aber noch nicht bestätigt
+   * wurden. Wird nur für Administratoren gerendert.
+   */
+  _renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) {
+    const wartende = uebersichtsSensor ? uebersichtsSensor.attributes.wartende_aufgaben || [] : [];
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <h2>⏳ Wartet auf Freigabe${wartende.length > 0 ? ` (${wartende.length})` : ""}</h2>
+        ${
+          wartende.length === 0
+            ? `<div class="hinweis">Aktuell nichts zu prüfen.</div>`
+            : `
+          <div class="aufgaben-liste">
+            ${wartende
+              .map(
+                (a) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(a.name)}</div>
+                  ${a.description ? `<div class="aufgaben-beschreibung">${this._escape(a.description)}</div>` : ""}
+                  <div class="aufgaben-zuweisung">
+                    Gemeldet von: ${this._nameFuerUserId(a.pending_by, benutzerSensoren)}
+                    · ${this._formatiereDatum(a.pending_since)}
+                  </div>
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">+${a.score}</span>
+                  <button class="btn-primary freigeben-btn" data-task-id="${a.id}">Freigeben</button>
+                  <button class="btn-danger ablehnen-btn" data-task-id="${a.id}">Ablehnen</button>
+                </div>
+              </div>`
+              )
+              .join("")}
+          </div>
+        `
+        }
       </div>
     `;
   }
@@ -932,6 +1078,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".rang-name-klickbar").forEach((el) => {
+      el.addEventListener("click", () => {
+        const userId = el.getAttribute("data-user-id");
+        this._aufgeklappterVerlaufUserId = this._aufgeklappterVerlaufUserId === userId ? null : userId;
+        this._render();
+      });
+    });
+
     if (!istAdmin) return;
 
     this.shadowRoot.querySelectorAll(".reset-punkte-btn").forEach((btn) => {
@@ -940,6 +1094,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
         const userName = ev.target.getAttribute("data-user-name");
         if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen?`)) {
           this._punktestandZuruecksetzen(userId);
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".freigeben-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._aufgabeFreigeben(ev.target.getAttribute("data-task-id"));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ablehnen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diese Erledigung wirklich ablehnen? Die Aufgabe wird wieder offen.")) {
+          this._aufgabeAblehnen(ev.target.getAttribute("data-task-id"));
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".rueckgaengig-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const taskName = ev.target.getAttribute("data-task-name");
+        if (confirm(`Erledigung von "${taskName}" wirklich zurücknehmen? Die Punkte werden wieder abgezogen.`)) {
+          this._erledigungRueckgaengig(ev.target.getAttribute("data-completion-id"));
         }
       });
     });
@@ -1239,6 +1416,48 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .reset-punkte-btn {
         font-size: 0.8em;
         padding: 4px 10px;
+      }
+      .rang-name-klickbar {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        user-select: none;
+      }
+      .verlauf-pfeil {
+        font-size: 0.7em;
+        color: var(--secondary-text-color);
+      }
+      .verlauf-bereich {
+        background: var(--secondary-background-color, rgba(0,0,0,0.03));
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--divider-color, #eee);
+      }
+      .verlauf-eintrag {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--divider-color, #eee);
+        font-size: 0.9em;
+      }
+      .verlauf-eintrag:last-child { border-bottom: none; }
+      .verlauf-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .verlauf-name { color: var(--primary-text-color); }
+      .verlauf-datum { font-size: 0.85em; color: var(--secondary-text-color); }
+      .verlauf-aktion {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .aufgaben-karte.wartend { opacity: 0.75; }
+      .punkte-badge-wartend {
+        background: var(--secondary-background-color, rgba(0,0,0,0.08));
+        color: var(--secondary-text-color);
       }
 
       .hinweis {
