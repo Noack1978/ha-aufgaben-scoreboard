@@ -36,6 +36,7 @@ from pathlib import Path
 import voluptuous as vol
 
 from homeassistant.components.frontend import (
+    add_extra_js_url,
     async_register_built_in_panel,
     async_remove_panel,
 )
@@ -60,6 +61,7 @@ from .const import (
     ATTR_TRIGGER_ENTITY_ID,
     ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
+    CARD_JS_FILENAME,
     DOMAIN,
     FRONTEND_URL_BASE,
     PANEL_ICON,
