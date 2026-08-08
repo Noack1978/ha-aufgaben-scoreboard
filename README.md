@@ -19,13 +19,18 @@ Benutzern zugewiesen werden.
 - **Custom Card** (`custom:aufgaben-scoreboard-card`), die in jedem
   beliebigen Dashboard platziert werden kann und die eigenen offenen
   Aufgaben samt "Erledigt"-Button zeigt
+- **Freigabe-Workflow**: Erledigungen warten auf Bestätigung durch einen
+  Administrator, bevor Punkte gutgeschrieben werden – inkl. Verlauf pro
+  Benutzer und nachträglicher Rücknahme-Möglichkeit (zeitlich/mengenmäßig
+  begrenzt)
 - **Standardaufgaben (Vorlagen)** für wiederkehrende Aufgaben, inkl.
   **Multiscoring** (eigene Aufgabe pro zugewiesenem Benutzer) sowie
   automatischer Anlage per **Entitäts-Trigger** und/oder **Zeitplan**
   (alle X Tage oder wöchentlich an einem festen Wochentag)
 - **Services** für Automationen/Skripte: `add_task`, `update_task`,
   `remove_task`, `assign_task`, `unassign_task`, `complete_task`,
-  `reset_score`, `add_template`, `update_template`, `remove_template`,
+  `approve_task`, `reject_task`, `undo_completion`, `reset_score`,
+  `add_template`, `update_template`, `remove_template`,
   `create_task_from_template`
 - Daten werden lokal in der Home-Assistant-Storage gespeichert – keine
   Cloud, keine externen Abhängigkeiten
@@ -77,15 +82,43 @@ Nach der Einrichtung erscheinen automatisch:
 
 ### Sidebar-Panel "Aufgaben"
 
-Zeigt für **alle Benutzer** eine Rangliste der Punktestände. Im
-Abschnitt "Meine offenen Aufgaben" kann jeder Benutzer seine eigenen
-Aufgaben abhaken. **Administratoren** sehen zusätzlich den
+Zeigt für **alle Benutzer** eine Rangliste der Punktestände. Ein Klick
+auf einen Namen klappt dessen Erledigungs-Verlauf auf. Im Abschnitt
+"Meine offenen Aufgaben" kann jeder Benutzer seine eigenen Aufgaben als
+erledigt melden – die Punkte werden dabei **nicht sofort** gutgeschrieben
+(siehe nächster Abschnitt). **Administratoren** sehen zusätzlich den
 Verwaltungsbereich, in dem neue Aufgaben angelegt, bestehende Aufgaben
 über "Bearbeiten" nachträglich geändert (inkl. Titel, Beschreibung,
 Punkte und Zuständigkeit) oder gelöscht werden können. Die Zuständigkeit
 wird dabei per Checkbox-Liste ausgewählt – mehrere Benutzer lassen sich
 so auf einen Blick erkennen, gezielt hinzufügen und auch wieder
 abwählen.
+
+### Freigabe-Workflow: Erledigung prüfen, bevor Punkte gutgeschrieben werden
+
+Meldet ein Benutzer eine Aufgabe als erledigt, wird sie **nicht sofort**
+abgeschlossen, sondern wechselt in den Status „wartet auf Freigabe" –
+ohne Punktegutschrift. Das gilt einheitlich für **alle** Benutzer, auch
+für Administratoren selbst.
+
+Administratoren sehen im Verwaltungsbereich einen eigenen Abschnitt
+„⏳ Wartet auf Freigabe" mit allen offenen Meldungen (wer, wann, welche
+Aufgabe) und zwei Buttons:
+
+- **Freigeben**: Aufgabe gilt als erledigt, Punkte werden jetzt
+  gutgeschrieben, der Eintrag erscheint im Verlauf.
+- **Ablehnen**: keine Punkte, Aufgabe wird wieder offen und kann erneut
+  erledigt werden (z. B. falls sie nicht ordentlich gemacht wurde).
+
+**Verlauf & nachträgliche Rücknahme:** Ein Klick auf einen Benutzernamen
+in der Rangliste zeigt dessen zuletzt freigegebene Aufgaben mit Datum
+und Punkten. Administratoren können dort per „Rückgängig" eine bereits
+freigegebene Erledigung nachträglich zurücknehmen (z. B. bei irrtümlicher
+Freigabe) – die Punkte werden abgezogen und die Aufgabe wieder geöffnet.
+Das ist aus zwei Gründen begrenzt: nur innerhalb der letzten **7 Tage**
+und nur unter den letzten **20 Erledigungen** desselben Benutzers. Ältere
+Einträge werden im Verlauf weiterhin angezeigt, aber ohne
+„Rückgängig"-Button.
 
 ### Berücksichtigte Benutzer konfigurieren
 
@@ -174,7 +207,10 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.remove_task`   | Aufgabe löschen                                        | ✅        |
 | `aufgaben_scoreboard.assign_task`   | Aufgabe einem Benutzer zuweisen                        | ✅        |
 | `aufgaben_scoreboard.unassign_task` | Zuweisung eines Benutzers entfernen                    | ✅        |
-| `aufgaben_scoreboard.complete_task` | Aufgabe als erledigt markieren, Punkte gutschreiben     | Nein¹     |
+| `aufgaben_scoreboard.complete_task` | Aufgabe als erledigt melden (wartet danach auf Freigabe, noch keine Punkte) | Nein¹ |
+| `aufgaben_scoreboard.approve_task`  | Erledigung freigeben, Punkte werden jetzt gutgeschrieben | ✅        |
+| `aufgaben_scoreboard.reject_task`   | Erledigung ablehnen, Aufgabe wird wieder offen          | ✅        |
+| `aufgaben_scoreboard.undo_completion` | Bereits freigegebene Erledigung nachträglich zurücknehmen (Grenzen: 7 Tage / letzte 20 Einträge) | ✅ |
 | `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen          | ✅        |
 | `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen, optional mit Entitäts- und/oder Zeitplan-Trigger | ✅        |
 | `aufgaben_scoreboard.update_template` | Standardaufgabe nachträglich bearbeiten               | ✅        |
@@ -183,7 +219,6 @@ Personen → Benutzer**.
 
 ¹ Jeder Benutzer darf nur seine eigenen Aufgaben erledigen;
 Administratoren dürfen dies stellvertretend für jeden Benutzer tun.
-
 
 ## 🗂️ Datenspeicherung
 
