@@ -185,11 +185,6 @@ Personen → Benutzer**.
 Administratoren dürfen dies stellvertretend für jeden Benutzer tun.
 
 
-```
-INFO ... Aufgaben-Scoreboard: Custom Card unter .../aufgaben-scoreboard-card.js registriert ...
-INFO ... Aufgaben-Scoreboard: Sidebar-Panel unter '/aufgaben-scoreboard' registriert.
-```
-
 ## 🗂️ Datenspeicherung
 
 Alle Aufgaben, Zuweisungen, Punktestände und der Erledigungsverlauf
