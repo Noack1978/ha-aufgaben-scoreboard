@@ -540,11 +540,27 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
         )
 
     # Custom Card global für alle Dashboards verfügbar machen.
+    #
+    # WICHTIG: Home Assistant lädt je nach Browser/Client entweder den
+    # "latest"-Modus (ES-Module, per import()) ODER den "es5"-Modus
+    # (klassisches <script>-Tag, für als "alt" erkannte Clients) - laut
+    # offizieller Doku werden beide NIE gleichzeitig geladen. Ohne
+    # explizite Angabe registriert add_extra_js_url() die Karte nur für
+    # den "latest"-Modus (es5=False). Wird ein Client (z. B. Chrome auf
+    # Android ohne aktivierten "Desktop-Modus") von HA fälschlich als
+    # ES5-Kandidat eingestuft, fehlt die Karte dort komplett -> "Custom
+    # element doesn't exist". Daher wird hier zusätzlich explizit auch
+    # für den ES5-Modus registriert; das Karten-JS selbst nutzt zwar
+    # moderne Syntax, läuft aber in jedem tatsächlich relevanten Browser
+    # unabhängig davon, über welches der beiden <script>-Ladeverfahren
+    # es eingebunden wird.
     card_url = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
     add_extra_js_url(hass, card_url)
+    add_extra_js_url(hass, card_url, es5=True)
     _LOGGER.info(
-        "Aufgaben-Scoreboard: Custom Card unter %s registriert (Direktaufruf zum "
-        "Testen im Browser möglich).",
+        "Aufgaben-Scoreboard: Custom Card unter %s registriert (sowohl für den "
+        "'latest'- als auch den 'es5'-Frontend-Modus; Direktaufruf zum Testen im "
+        "Browser möglich).",
         card_url,
     )
 
