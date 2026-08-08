@@ -203,7 +203,9 @@ undo_completion:
 
 reset_score:
   name: Punktestand zurücksetzen
-  description: Setzt den Punktestand eines Benutzers auf 0 zurück. Nur für Administratoren.
+  description: >-
+    Setzt den Punktestand eines Benutzers auf 0 zurück und löscht dabei
+    auch dessen komplette Erledigungs-Historie. Nur für Administratoren.
   fields:
     user_id:
       name: Benutzer-ID

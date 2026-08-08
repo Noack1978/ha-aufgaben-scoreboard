@@ -585,10 +585,24 @@ class AufgabenScoreboardManager:
         return True
 
     async def async_reset_score(self, user_id: str) -> None:
-        """Setzt den Punktestand eines Benutzers auf 0 zurück."""
+        """
+        Setzt den Punktestand eines Benutzers auf 0 zurück UND löscht
+        seine komplette Erledigungs-Historie (completions) - ein
+        zurückgesetzter Punktestand soll nicht neben einem weiterhin
+        vorhandenen Verlauf "erledigter Aufgaben" stehen, der die alten,
+        bereits gelöschten Punkte noch anzeigen würde.
+        """
         self._data["scores"][user_id] = 0
+        entfernte_eintraege = len(
+            [c for c in self._data["completions"] if c["user_id"] == user_id]
+        )
+        self._data["completions"] = [c for c in self._data["completions"] if c["user_id"] != user_id]
         await self._async_persist()
-        _LOGGER.info("Punktestand von Benutzer '%s' wurde zurückgesetzt.", user_id)
+        _LOGGER.info(
+            "Punktestand von Benutzer '%s' wurde zurückgesetzt (inkl. %s gelöschter Verlaufs-Einträge).",
+            user_id,
+            entfernte_eintraege,
+        )
 
     # ------------------------------------------------------------------
     # Standardaufgaben (Vorlagen)
