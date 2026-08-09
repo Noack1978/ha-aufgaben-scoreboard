@@ -9,6 +9,10 @@ verwendet werden können.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Final
+
 # -----------------------------------------------------------------------
 # Grundlegende Integration-Konstanten
 # -----------------------------------------------------------------------
@@ -16,6 +20,17 @@ from __future__ import annotations
 # Eindeutiger technischer Name der Integration (muss mit dem Ordnernamen
 # unter custom_components/ übereinstimmen).
 DOMAIN = "aufgaben_scoreboard"
+
+# Version aus manifest.json auslesen - wird als Cache-Busting-Parameter
+# (?v=...) an die Frontend-Ressourcen-URL der Custom Card angehängt, damit
+# Browser nach einem Update zuverlässig die neue Datei laden statt einer
+# alten, gecachten Version (siehe _async_register_card() in __init__.py).
+_MANIFEST_PFAD = Path(__file__).parent / "manifest.json"
+try:
+    with open(_MANIFEST_PFAD, encoding="utf-8") as _manifest_datei:
+        INTEGRATION_VERSION: Final[str] = json.load(_manifest_datei).get("version", "0.0.0")
+except (OSError, ValueError):
+    INTEGRATION_VERSION = "0.0.0"
 
 # Von dieser Integration bereitgestellte Plattformen (hier: nur Sensoren,
 # ein Sensor pro Home-Assistant-Benutzer mit dessen Punktestand).
@@ -138,6 +153,7 @@ SCHEDULE_TYPE_WEEKLY = "weekly"
 FRONTEND_URL_BASE = f"/{DOMAIN}_frontend"
 
 PANEL_JS_FILENAME = "aufgaben-scoreboard-panel.js"
+CARD_JS_FILENAME = "aufgaben-scoreboard-card.js"
 
 # URL-Pfad, unter dem das Panel in der Seitenleiste erscheint
 # (https://<ha-instanz>/aufgaben-scoreboard).

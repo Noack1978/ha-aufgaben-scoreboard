@@ -1,12 +1,28 @@
 """
 Integration "Aufgaben-Punktesystem" für Home Assistant.
 
-Diese Datei ist der Einstiegspunkt der Integration. Sie wird von Home
-Assistant automatisch geladen, sobald die Integration über die UI
-("Einstellungen -> Geräte & Dienste -> Integration hinzufügen")
-eingerichtet wurde (siehe config_flow.py).
+Diese Datei ist der Einstiegspunkt der Integration. Home Assistant ruft
+zwei getrennte Setup-Funktionen auf:
 
-Aufgaben dieser Datei:
+    - async_setup(): EINMAL pro Home-Assistant-Prozess (nicht bei jedem
+      Neuladen des Config-Entries) - hier wird der statische
+      Frontend-Pfad registriert und die Custom Card als
+      Lovelace-Ressource eingetragen. Diese Trennung UND das direkte
+      Arbeiten mit dem echten hass.data["lovelace"]-Objekt (statt einer
+      eigenen, separaten Store-Instanz) folgt dem offiziellen
+      Community-Leitfaden "Developer Guide: Embedded Lovelace Card in a
+      Home Assistant Integration" (Jan/Feb 2026) und umgeht damit
+      gezielt einen bestätigten Home-Assistant-Core-Bug (#165767): Die
+      Lovelace-Ressourcen-Sammlung wird lazy geladen; ein roher,
+      separater Store-Zugriff kann mit dem echten Objekt kollidieren
+      und bestehende Einträge überschreiben.
+    - async_setup_entry(): einmal pro eingerichtetem Config-Entry (bei
+      dieser Integration wegen "single_config_entry": true faktisch nur
+      einmal insgesamt, kann aber bei jedem Neuladen erneut laufen).
+      Hier passiert alles, was an den Lebenszyklus des Entries gebunden
+      ist: Datenmanager, Sensoren, Services, Sidebar-Panel.
+
+Aufgaben von async_setup_entry():
     1. Den zentralen Datenmanager (AufgabenScoreboardManager) erstellen
        und dessen gespeicherte Daten laden.
     2. Die Sensor-Plattform (ein Sensor pro Home-Assistant-Benutzer)
@@ -16,21 +32,15 @@ Aufgaben dieser Datei:
        reject_task, undo_completion, reset_score, ...), damit diese in
        Automationen/Skripten UND vom Sidebar-Panel aus aufgerufen
        werden können.
-    4. Die statische Frontend-Datei des Sidebar-Panels unter einer
-       festen URL bereitstellen und das Panel bei Home Assistant
-       registrieren.
-
-    Hinweis: Es gab bis Version 1.4.0 zusätzlich eine Custom Card für
-    normale Dashboards. Sie wurde entfernt, siehe Docstring von
-    _async_setup_frontend() für den Hintergrund. Eine Alternative für
-    eine Aufgaben-Übersicht im Dashboard (Markdown-Karte, kein Custom
-    Element) steht in der README.
+    4. Das Sidebar-Panel bei Home Assistant registrieren (der statische
+       Pfad dafür wurde bereits in async_setup() eingerichtet).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import voluptuous as vol
 
@@ -43,7 +53,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.event import async_call_later
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     ATTR_ASSIGNED_TO,
@@ -60,8 +72,10 @@ from .const import (
     ATTR_TRIGGER_ENTITY_ID,
     ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
+    CARD_JS_FILENAME,
     DOMAIN,
     FRONTEND_URL_BASE,
+    INTEGRATION_VERSION,
     PANEL_ICON,
     PANEL_JS_FILENAME,
     PANEL_TITLE,
@@ -88,8 +102,8 @@ from .manager import AufgabenScoreboardManager
 
 _LOGGER = logging.getLogger(__name__)
 
-# Verzeichnis, in dem die JavaScript-Datei des Panels innerhalb dieser
-# Integration liegt.
+# Verzeichnis, in dem die JavaScript-Dateien (Panel + Custom Card)
+# innerhalb dieser Integration liegen.
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
@@ -201,6 +215,137 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
 SCHEMA_REMOVE_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
 
 SCHEMA_CREATE_TASK_FROM_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """
+    Domain-weites Setup - läuft EINMAL pro Home-Assistant-Prozess, noch
+    bevor async_setup_entry() für den (einzigen) Config-Entry aufgerufen
+    wird, und wird NICHT erneut ausgeführt, wenn der Entry später neu
+    geladen wird. Registriert deshalb hier (statt in async_setup_entry)
+    alles, was wirklich nur einmal pro laufendem Home Assistant
+    passieren muss: den statischen Frontend-Pfad (liefert sowohl die
+    Panel- als auch die Karten-JS-Datei aus) sowie die Custom Card als
+    Lovelace-Ressource. Siehe Datei-Docstring für den Hintergrund.
+    """
+
+    async def _setup_frontend(_event=None) -> None:
+        await _async_register_static_path(hass)
+        await _async_register_card_resource(hass)
+
+    if hass.state is CoreState.running:
+        await _setup_frontend()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _setup_frontend)
+
+    return True
+
+
+async def _async_register_static_path(hass: HomeAssistant) -> None:
+    """
+    Registriert den statischen Pfad /aufgaben_scoreboard_frontend/, der
+    das komplette frontend/-Verzeichnis (Panel- UND Karten-JS)
+    ausliefert - ein einziger Aufruf deckt beide Dateien ab.
+    """
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    FRONTEND_URL_BASE,
+                    str(FRONTEND_DIR),
+                    cache_headers=False,
+                )
+            ]
+        )
+        _LOGGER.debug("Statischer Frontend-Pfad registriert: %s", FRONTEND_URL_BASE)
+    except RuntimeError:
+        # Kann bei einem echten Home-Assistant-Neustart mit bereits
+        # vorhandenen alten Zustandsresten passieren - da diese
+        # Registrierung dank async_setup() jetzt ohnehin nur einmal pro
+        # Prozess läuft, ist das nur noch eine zusätzliche Absicherung,
+        # kein regulärer Fall mehr.
+        _LOGGER.debug("Statischer Frontend-Pfad '%s' war bereits registriert.", FRONTEND_URL_BASE)
+
+
+async def _async_register_card_resource(hass: HomeAssistant) -> None:
+    """
+    Trägt die Custom Card als Lovelace-Ressource ein - über das ECHTE,
+    laufende Home-Assistant-Lovelace-Objekt (hass.data["lovelace"]),
+    NICHT über eine eigene, separate Store-Instanz. Nur im
+    Storage-Modus möglich (Standardfall); im YAML-Modus muss die
+    Ressource manuell eingetragen werden (siehe README).
+    """
+    lovelace = hass.data.get("lovelace")
+    if lovelace is None:
+        _LOGGER.warning(
+            "Lovelace-Komponente war beim Registrieren der Custom Card noch nicht bereit - "
+            "sie steht ggf. erst nach einem erneuten Neustart zur Verfügung."
+        )
+        return
+
+    if getattr(lovelace, "mode", None) != "storage":
+        _LOGGER.info(
+            "Lovelace läuft im YAML-Modus - die Custom Card muss dort manuell als Ressource "
+            "eingetragen werden (URL: %s/%s). Siehe README.",
+            FRONTEND_URL_BASE,
+            CARD_JS_FILENAME,
+        )
+        return
+
+    await _async_warte_auf_lovelace_ressourcen(hass, lovelace)
+
+
+async def _async_warte_auf_lovelace_ressourcen(hass: HomeAssistant, lovelace: Any) -> None:
+    """
+    Wartet - mit Wiederholung alle 5 Sekunden - bis Home Assistants
+    eigene Lovelace-Ressourcen-Sammlung fertig von der Festplatte
+    geladen ist (lovelace.resources.loaded), bevor darauf zugegriffen
+    wird. Genau das umgeht den bekannten Lazy-Load-Bug (siehe
+    Datei-Docstring): Zugriffe VOR dem vollständigen Laden würden eine
+    leere Sammlung sehen und könnten bestehende Einträge überschreiben.
+    """
+
+    async def _pruefen(_now: Any = None) -> None:
+        if lovelace.resources.loaded:
+            await _async_karte_als_ressource_eintragen(lovelace)
+        else:
+            _LOGGER.debug("Lovelace-Ressourcen noch nicht geladen - erneuter Versuch in 5s.")
+            async_call_later(hass, 5, _pruefen)
+
+    await _pruefen()
+
+
+async def _async_karte_als_ressource_eintragen(lovelace: Any) -> None:
+    """
+    Legt den Lovelace-Ressourcen-Eintrag für die Custom Card an, bzw.
+    aktualisiert dessen Versions-Parameter, falls sich die
+    Integrations-Version seit dem letzten Eintrag geändert hat
+    (Cache-Busting: Browser laden nach einem Update zuverlässig die
+    neue Datei statt einer alten, gecachten Version).
+    """
+    karten_url_ohne_version = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
+    versionierte_url = f"{karten_url_ohne_version}?v={INTEGRATION_VERSION}"
+
+    vorhandene_eintraege = [
+        eintrag
+        for eintrag in lovelace.resources.async_items()
+        if eintrag["url"].split("?")[0] == karten_url_ohne_version
+    ]
+
+    if not vorhandene_eintraege:
+        await lovelace.resources.async_create_item({"res_type": "module", "url": versionierte_url})
+        _LOGGER.info(
+            "Aufgaben-Scoreboard: Custom Card als Lovelace-Ressource eingetragen (%s).", versionierte_url
+        )
+        return
+
+    eintrag = vorhandene_eintraege[0]
+    aktuell_eingetragene_version = eintrag["url"].split("?v=")[-1] if "?v=" in eintrag["url"] else None
+    if aktuell_eingetragene_version != INTEGRATION_VERSION:
+        await lovelace.resources.async_update_item(eintrag["id"], {"res_type": "module", "url": versionierte_url})
+        _LOGGER.info("Aufgaben-Scoreboard: Custom Card auf Version %s aktualisiert.", INTEGRATION_VERSION)
+    else:
+        _LOGGER.debug("Aufgaben-Scoreboard: Custom Card war bereits in aktueller Version eingetragen.")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -523,20 +668,15 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
 async def _async_setup_frontend(hass: HomeAssistant) -> None:
     """
-    Stellt die JavaScript-Datei des Sidebar-Panels über einen statischen
-    HTTP-Pfad bereit und registriert das Panel bei Home Assistant.
+    Registriert das Sidebar-Panel bei Home Assistant.
 
-    Hinweis: Es gab bis Version 1.4.0 zusätzlich eine Custom Card
-    (custom:aufgaben-scoreboard-card) für die Verwendung in normalen
-    Dashboards. Sie wurde entfernt, nachdem sie wiederholt (auch nach
-    mehreren gezielten Fixes) im Kartenauswahl-Dialog mit "Custom
-    element doesn't exist" bzw. einem endlos hängenden Ladekreis
-    fehlschlug - die genaue Ursache ließ sich trotz umfangreicher
-    Diagnose (Log-Analyse, Ausschluss von browser_mod/
-    lovelace-header-cards als Auslöser) nicht abschließend klären. Für
-    eine Aufgaben-Übersicht im Dashboard siehe stattdessen die
-    Markdown-Karten-Vorlage in der README - sie kommt ohne Custom
-    Element aus und ist davon nicht betroffen.
+    Der statische HTTP-Pfad, der die JS-Datei tatsächlich ausliefert,
+    wird NICHT hier, sondern bereits einmalig in async_setup()
+    registriert (deckt Panel- und Karten-JS gemeinsam ab). Diese
+    Funktion kümmert sich nur noch um die Panel-Registrierung selbst,
+    die - anders als der statische Pfad - an den Lebenszyklus dieses
+    Config-Entries gebunden ist (siehe async_remove_panel() in
+    async_unload_entry).
     """
     panel_pfad = FRONTEND_DIR / PANEL_JS_FILENAME
 
@@ -546,38 +686,6 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
             panel_pfad,
         )
         return
-
-    # Statischen Pfad registrieren: alles unter /aufgaben_scoreboard_frontend/
-    # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert.
-    #
-    # WICHTIG: Wird die Integration neu geladen, OHNE dass Home Assistant
-    # komplett neu gestartet wurde, kann aiohttp beim erneuten
-    # Registrieren desselben Pfads mit einem RuntimeError ("Added route
-    # will never be executed, method GET is already registered")
-    # abbrechen - es gibt für den statischen Pfad (anders als beim Panel,
-    # siehe async_remove_panel() in async_unload_entry) kein Gegenstück
-    # zum Abmelden. Derselbe Fehler trat bereits konkret bei
-    # ha-parcel-tracking (behoben in v1.0.4) und ha-step-challenge auf;
-    # der Fix dort - gezielt NUR RuntimeError abfangen - wird hier 1:1
-    # übernommen, damit dieser eine, bekannte Fall die Panel-Registrierung
-    # nicht blockiert.
-    try:
-        await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    FRONTEND_URL_BASE,
-                    str(FRONTEND_DIR),
-                    cache_headers=False,
-                )
-            ]
-        )
-        _LOGGER.debug("Statischer Frontend-Pfad registriert: %s", FRONTEND_URL_BASE)
-    except RuntimeError:
-        _LOGGER.debug(
-            "Statischer Frontend-Pfad '%s' war bereits registriert (normal bei "
-            "einem Neuladen der Integration ohne Home-Assistant-Neustart).",
-            FRONTEND_URL_BASE,
-        )
 
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
     # dass Home Assistant das angegebene JavaScript-Modul als eigenes
