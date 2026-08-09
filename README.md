@@ -16,10 +16,10 @@ Benutzern zugewiesen werden.
 - **Eigenes Sidebar-Panel** ("Aufgaben") in der Seitenleiste mit
   vollständiger Verwaltung (Anlegen, Zuweisen, Löschen – nur für
   Administratoren) sowie einer Rangliste aller Benutzer
-- **Custom Card** (`custom:aufgaben-scoreboard-card`) für die eigenen
-  offenen Aufgaben direkt in einem beliebigen Dashboard, sowie
-  alternativ eine native **Markdown-Karte** (Vorlage weiter unten) für
-  die Übersicht aller offenen Aufgaben ohne Custom Element
+- **Aufgaben-Übersicht im Dashboard** über eine native Markdown-Karte
+  (Vorlage weiter unten) – ohne Custom Element, dadurch ohne die
+  Kompatibilitätsprobleme, die eine frühere Custom Card mit sich
+  brachte (siehe Abschnitt weiter unten)
 - **Freigabe-Workflow**: Erledigungen warten auf Bestätigung durch einen
   Administrator, bevor Punkte gutgeschrieben werden – inkl. Verlauf pro
   Benutzer und nachträglicher Rücknahme-Möglichkeit (zeitlich/mengenmäßig
@@ -56,7 +56,6 @@ Benutzern zugewiesen werden.
            ├── manifest.json
            ├── ...
            └── frontend/
-               ├── aufgaben-scoreboard-card.js
                └── aufgaben-scoreboard-panel.js
    ```
 
@@ -73,11 +72,10 @@ Benutzern zugewiesen werden.
 3. Home Assistant neu starten und wie oben über **Einstellungen →
    Geräte & Dienste** hinzufügen.
 
-Nach der Einrichtung erscheinen automatisch ein neuer Eintrag
-**"Aufgaben"** in der Seitenleiste sowie die Custom Card (auch sichtbar
-unter **Einstellungen → Dashboards → Ressourcen**). Für eine
-Aufgaben-Übersicht mit allen (nicht nur eigenen) offenen Aufgaben siehe
-zusätzlich den Abschnitt "Aufgaben im Dashboard anzeigen" weiter unten.
+Nach der Einrichtung erscheint automatisch ein neuer Eintrag
+**"Aufgaben"** in der Seitenleiste. Für eine Aufgaben-Übersicht direkt
+im Dashboard siehe den Abschnitt "Aufgaben im Dashboard anzeigen"
+weiter unten.
 
 ## 🖥️ Nutzung
 
@@ -171,40 +169,20 @@ Benutzer. In der Übersicht erscheint dadurch pro Benutzer eine eigene
 Karte; erledigt jemand seine, verschwindet nur diese – die Aufgaben der
 übrigen zugewiesenen Benutzer bleiben unberührt bestehen.
 
-### Custom Card im Dashboard
-
-Über den Dashboard-Editor eine neue Karte hinzufügen und
-`Aufgaben-Scoreboard Karte` auswählen, oder per YAML:
-
-```yaml
-type: custom:aufgaben-scoreboard-card
-```
-
-Die Karte benötigt keine weitere Konfiguration – sie erkennt den
-angemeldeten Benutzer automatisch und zeigt dessen offene Aufgaben samt
-"Erledigt"-Button.
-
-**Hinweis zur Registrierung:** Bis einschließlich v1.4.0-beta.4 wurde
-die Karte über einen global injizierenden Mechanismus (`add_extra_js_url`)
-eingebunden, was wiederholt zu inkonsistenten `Custom element doesn't
-exist`-Fehlern bzw. einem endlos hängenden Ladekreis in der
-Kartenauswahl führte – die genaue Ursache ließ sich trotz umfangreicher
-Diagnose (Log-Analyse, Ausschluss von `browser_mod` und
-`lovelace-header-cards` als Auslöser) nicht abschließend klären. Seit
-v1.4.0-beta.5 wird stattdessen die Karte als echte Lovelace-Ressource
-direkt in den Home-Assistant-Storage eingetragen (dasselbe Verfahren,
-das auch **Einstellungen → Dashboards → Ressourcen** manuell anlegen
-würde) – ein Muster, das sich in anderen Repos bereits als zuverlässig
-erwiesen hat. Falls dennoch einmal Probleme auftreten sollten, steht mit
-der Markdown-Karte im nächsten Abschnitt eine Alternative ganz ohne
-Custom Element zur Verfügung.
-
 ### Aufgaben im Dashboard anzeigen (Markdown-Karte)
 
-Alternative zur Custom Card oben: Eine Übersicht **aller** offenen
-Aufgaben (nicht nur der eigenen) lässt sich auch mit einer **nativen
-Markdown-Karte** abbilden - kein Custom Element, keine zusätzliche
-JavaScript-Registrierung nötig. Neue Karte → **Markdown** → in den
+Es gab bis Version 1.4.0 eine eigene Custom Card
+(`custom:aufgaben-scoreboard-card`) für normale Dashboards. Sie wurde
+entfernt, nachdem sie wiederholt - trotz mehrerer gezielter Fixes - im
+Kartenauswahl-Dialog mit `Custom element doesn't exist` bzw. einem
+endlos hängenden Ladekreis fehlschlug. Die genaue Ursache ließ sich
+trotz umfangreicher Diagnose (Log-Analyse, Ausschluss von `browser_mod`
+und `lovelace-header-cards` als Auslöser) nicht abschließend klären.
+
+Stattdessen lässt sich eine Übersicht aller offenen Aufgaben mit einer
+**nativen Markdown-Karte** abbilden - kein Custom Element, keine
+zusätzliche JavaScript-Registrierung, dadurch von den oben genannten
+Problemen nicht betroffen. Neue Karte → **Markdown** → in den
 YAML-Modus wechseln und folgenden Code einfügen:
 
 ```yaml
@@ -316,7 +294,6 @@ custom_components/aufgaben_scoreboard/
 ├── services.yaml         # Service-Beschreibungen für die HA-UI
 ├── strings.json / translations/  # Übersetzungen
 └── frontend/
-    ├── aufgaben-scoreboard-card.js    # Custom Card fürs Dashboard
     └── aufgaben-scoreboard-panel.js   # Sidebar-Panel (volle Verwaltung)
 ```
 
