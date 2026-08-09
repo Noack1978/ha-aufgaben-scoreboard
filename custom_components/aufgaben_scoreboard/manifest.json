@@ -3,12 +3,12 @@
   "name": "Aufgaben-Punktesystem",
   "codeowners": ["@Noack1978"],
   "config_flow": true,
-  "dependencies": ["frontend", "http"],
+  "dependencies": ["http"],
   "documentation": "https://github.com/Noack1978/ha-aufgaben-scoreboard",
   "integration_type": "hub",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/Noack1978/ha-aufgaben-scoreboard/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "1.4.0b4"
+  "version": "1.4.0b5"
 }
