@@ -130,7 +130,7 @@ SCHEDULE_TYPE_DAYS = "days"
 SCHEDULE_TYPE_WEEKLY = "weekly"
 
 # -----------------------------------------------------------------------
-# Konstanten für das Frontend (Sidebar-Panel + Custom Card).
+# Konstanten für das Frontend (Sidebar-Panel).
 # -----------------------------------------------------------------------
 
 # Pfad, unter dem die JavaScript-Datei des Panels im Browser erreichbar
@@ -138,7 +138,6 @@ SCHEDULE_TYPE_WEEKLY = "weekly"
 FRONTEND_URL_BASE = f"/{DOMAIN}_frontend"
 
 PANEL_JS_FILENAME = "aufgaben-scoreboard-panel.js"
-CARD_JS_FILENAME = "aufgaben-scoreboard-card.js"
 
 # URL-Pfad, unter dem das Panel in der Seitenleiste erscheint
 # (https://<ha-instanz>/aufgaben-scoreboard).

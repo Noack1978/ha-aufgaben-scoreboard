@@ -16,11 +16,15 @@ Aufgaben dieser Datei:
        reject_task, undo_completion, reset_score, ...), damit diese in
        Automationen/Skripten UND vom Sidebar-Panel aus aufgerufen
        werden können.
-    4. Die statischen Frontend-Dateien (Sidebar-Panel UND Custom Card)
-       unter einer festen URL bereitstellen, das Panel bei Home
-       Assistant registrieren und die Custom Card als Lovelace-Ressource
-       eintragen (siehe Docstring von _async_setup_frontend() für die
-       verwendete Registrierungsmethode).
+    4. Die statische Frontend-Datei des Sidebar-Panels unter einer
+       festen URL bereitstellen und das Panel bei Home Assistant
+       registrieren.
+
+    Hinweis: Es gab bis Version 1.4.0 zusätzlich eine Custom Card für
+    normale Dashboards. Sie wurde entfernt, siehe Docstring von
+    _async_setup_frontend() für den Hintergrund. Eine Alternative für
+    eine Aufgaben-Übersicht im Dashboard (Markdown-Karte, kein Custom
+    Element) steht in der README.
 """
 
 from __future__ import annotations
@@ -40,7 +44,6 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.storage import Store
 
 from .const import (
     ATTR_ASSIGNED_TO,
@@ -57,7 +60,6 @@ from .const import (
     ATTR_TRIGGER_ENTITY_ID,
     ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
-    CARD_JS_FILENAME,
     DOMAIN,
     FRONTEND_URL_BASE,
     PANEL_ICON,
@@ -245,7 +247,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _async_register_services(hass, manager)
 
     # ------------------------------------------------------------------
-    # 4. Frontend (Sidebar-Panel + Custom Card) registrieren
+    # 4. Frontend (Sidebar-Panel) registrieren
     #
     # WICHTIG: async_register_static_paths() und
     # async_register_built_in_panel() dürfen erst aufgerufen werden,
@@ -521,39 +523,32 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
 async def _async_setup_frontend(hass: HomeAssistant) -> None:
     """
-    Stellt die JavaScript-Dateien (Sidebar-Panel + Custom Card) über
-    einen statischen HTTP-Pfad bereit, registriert das Panel bei Home
-    Assistant und trägt die Custom Card als Lovelace-Ressource ein.
+    Stellt die JavaScript-Datei des Sidebar-Panels über einen statischen
+    HTTP-Pfad bereit und registriert das Panel bei Home Assistant.
 
-    WICHTIG - Registrierungsmethode der Custom Card:
-    Bis einschließlich v1.4.0-beta.4 wurde die Karte über
-    add_extra_js_url() global injiziert. Das führte wiederholt zu
-    inkonsistenten "Custom element doesn't exist"-Fehlern bzw. einem
-    endlos hängenden Ladekreis in der Kartenauswahl, deren genaue
-    Ursache sich trotz umfangreicher Diagnose nie abschließend klären
-    ließ (siehe README-Historie). Seit dieser Version wird stattdessen
-    das in ha-parcel-tracking verifizierte, zuverlässig funktionierende
-    Muster verwendet: Die Karte wird als ECHTE Lovelace-Ressource direkt
-    in den Home-Assistant-Storage (Store(hass, 1, "lovelace_resources"))
-    eingetragen - dieselbe Datenquelle, die auch "Einstellungen ->
-    Dashboards -> Ressourcen" anzeigt. Dadurch taucht sie dort jetzt
-    auch sichtbar auf (vorher, mit add_extra_js_url(), bewusst nicht).
+    Hinweis: Es gab bis Version 1.4.0 zusätzlich eine Custom Card
+    (custom:aufgaben-scoreboard-card) für die Verwendung in normalen
+    Dashboards. Sie wurde entfernt, nachdem sie wiederholt (auch nach
+    mehreren gezielten Fixes) im Kartenauswahl-Dialog mit "Custom
+    element doesn't exist" bzw. einem endlos hängenden Ladekreis
+    fehlschlug - die genaue Ursache ließ sich trotz umfangreicher
+    Diagnose (Log-Analyse, Ausschluss von browser_mod/
+    lovelace-header-cards als Auslöser) nicht abschließend klären. Für
+    eine Aufgaben-Übersicht im Dashboard siehe stattdessen die
+    Markdown-Karten-Vorlage in der README - sie kommt ohne Custom
+    Element aus und ist davon nicht betroffen.
     """
     panel_pfad = FRONTEND_DIR / PANEL_JS_FILENAME
-    card_pfad = FRONTEND_DIR / CARD_JS_FILENAME
 
-    if not panel_pfad.exists() or not card_pfad.exists():
+    if not panel_pfad.exists():
         _LOGGER.error(
-            "Frontend-Dateien der Integration fehlen (%s). "
-            "Sidebar-Panel und/oder Custom Card stehen nicht zur Verfügung.",
-            FRONTEND_DIR,
+            "Frontend-Datei des Sidebar-Panels fehlt (%s). Das Panel steht nicht zur Verfügung.",
+            panel_pfad,
         )
         return
 
     # Statischen Pfad registrieren: alles unter /aufgaben_scoreboard_frontend/
-    # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert -
-    # das deckt sowohl Panel als auch Custom Card ab, ein einziger Aufruf
-    # genügt für beide Dateien.
+    # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert.
     #
     # WICHTIG: Wird die Integration neu geladen, OHNE dass Home Assistant
     # komplett neu gestartet wurde, kann aiohttp beim erneuten
@@ -564,8 +559,8 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
     # zum Abmelden. Derselbe Fehler trat bereits konkret bei
     # ha-parcel-tracking (behoben in v1.0.4) und ha-step-challenge auf;
     # der Fix dort - gezielt NUR RuntimeError abfangen - wird hier 1:1
-    # übernommen, damit dieser eine, bekannte Fall die restliche
-    # Frontend-Registrierung nicht blockiert.
+    # übernommen, damit dieser eine, bekannte Fall die Panel-Registrierung
+    # nicht blockiert.
     try:
         await hass.http.async_register_static_paths(
             [
@@ -610,25 +605,3 @@ async def _async_setup_frontend(hass: HomeAssistant) -> None:
         require_admin=False,
     )
     _LOGGER.info("Aufgaben-Scoreboard: Sidebar-Panel unter '/%s' registriert.", PANEL_URL_PATH)
-
-    # Custom Card als Lovelace-Ressource eintragen (verifiziertes Muster
-    # aus ha-parcel-tracking). Fester String-ID-Eintrag statt berechneter
-    # Nummer, damit bei jedem Neuladen zuverlässig derselbe Eintrag
-    # wiedergefunden (und nicht dupliziert) wird. Fallback-Datenstruktur
-    # bewusst im vollen Format ("items" + "deleted_items"), da der
-    # Lovelace-Resource-Store beide Schlüssel erwartet.
-    card_url = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
-    resource_store = Store(hass, 1, "lovelace_resources")
-    resource_daten = await resource_store.async_load() or {"items": [], "deleted_items": []}
-    if not any(eintrag.get("url") == card_url for eintrag in resource_daten.get("items", [])):
-        resource_daten.setdefault("items", []).append(
-            {
-                "id": "aufgaben_scoreboard_card",
-                "type": "module",
-                "url": card_url,
-            }
-        )
-        await resource_store.async_save(resource_daten)
-        _LOGGER.info("Aufgaben-Scoreboard: Custom Card als Lovelace-Ressource unter %s eingetragen.", card_url)
-    else:
-        _LOGGER.debug("Aufgaben-Scoreboard: Custom Card war bereits als Lovelace-Ressource eingetragen.")
