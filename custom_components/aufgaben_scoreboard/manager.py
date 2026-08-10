@@ -155,6 +155,17 @@ class AufgabenScoreboardManager:
                 # relevant, wenn das Prämien-System aktiviert ist
             ...
         },
+        "points_history": [
+            {
+                "id": "<uuid>",
+                "user_id": "...",
+                "amount": 15,  # positiv = Zugang (Siegerehrung),
+                    # negativ = Abgang (Prämien-Einlösung)
+                "reason": "Siegerehrung" | "Prämie: Kinobesuch",
+                "timestamp": "...",
+            },
+            ...
+        ],
         "rewards": {
             "<reward_id>": {
                 "id": "<reward_id>",
@@ -206,6 +217,7 @@ class AufgabenScoreboardManager:
             "templates": {},
             "wins": {},
             "points_account": {},
+            "points_history": [],
             "rewards": {},
             "redemptions": [],
         }
@@ -235,6 +247,7 @@ class AufgabenScoreboardManager:
             self._data["templates"] = gespeicherte_daten.get("templates", {})
             self._data["wins"] = gespeicherte_daten.get("wins", {})
             self._data["points_account"] = gespeicherte_daten.get("points_account", {})
+            self._data["points_history"] = gespeicherte_daten.get("points_history", [])
             self._data["rewards"] = gespeicherte_daten.get("rewards", {})
             self._data["redemptions"] = gespeicherte_daten.get("redemptions", [])
 
@@ -724,6 +737,15 @@ class AufgabenScoreboardManager:
             for user_id, punkte in self._data["scores"].items():
                 if punkte > 0:
                     self._data["points_account"][user_id] = self._data["points_account"].get(user_id, 0) + punkte
+                    self._data["points_history"].append(
+                        {
+                            "id": uuid.uuid4().hex,
+                            "user_id": user_id,
+                            "amount": punkte,
+                            "reason": "Siegerehrung",
+                            "timestamp": _jetzt_iso(),
+                        }
+                    )
 
         for user_id in list(self._data["scores"].keys()):
             self._data["scores"][user_id] = 0
@@ -761,6 +783,16 @@ class AufgabenScoreboardManager:
     def get_points_account(self, user_id: str) -> int:
         """Liefert das aktuelle Prämien-Guthaben eines Benutzers."""
         return self._data["points_account"].get(user_id, 0)
+
+    def get_points_history_for_user(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
+        """
+        Liefert die letzten Punktekonto-Bewegungen eines Benutzers
+        (Zugänge aus Siegerehrungen, Abgänge aus genehmigten
+        Prämien-Einlösungen), neueste zuerst.
+        """
+        eintraege = [copy.deepcopy(e) for e in self._data["points_history"] if e["user_id"] == user_id]
+        eintraege.sort(key=lambda e: e["timestamp"], reverse=True)
+        return eintraege[:limit]
 
     def get_all_rewards(self) -> list[dict[str, Any]]:
         """Liefert alle konfigurierten Prämien."""
@@ -938,6 +970,15 @@ class AufgabenScoreboardManager:
         self._data["points_account"][eintrag["user_id"]] = guthaben - eintrag["cost"]
         eintrag["status"] = REDEMPTION_STATUS_APPROVED
         eintrag["approved_at"] = _jetzt_iso()
+        self._data["points_history"].append(
+            {
+                "id": uuid.uuid4().hex,
+                "user_id": eintrag["user_id"],
+                "amount": -eintrag["cost"],
+                "reason": f"Prämie: {eintrag['reward_name']}",
+                "timestamp": eintrag["approved_at"],
+            }
+        )
 
         if eintrag["reward_type"] == REWARD_TYPE_INTERNET_TIME and eintrag.get("switch_entity_id"):
             jetzt = dt_util.now()

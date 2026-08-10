@@ -44,9 +44,18 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Erledigungs-Verlauf in der Rangliste gerade aufgeklappt ist -
     // null = keiner. Immer nur einer gleichzeitig aufgeklappt.
     this._aufgeklappterVerlaufUserId = null;
+    // Analog, aber für den EIGENSTÄNDIGEN Punktekonto-Verlauf (Zugänge/
+    // Abgänge) - bewusst getrennt vom Aufgaben-Verlauf oben, damit
+    // beide unabhängig voneinander auf-/zugeklappt werden können.
+    this._aufgeklappterPunktekontoUserId = null;
     // Analog zum Vorlagen-Formular, aber für die Prämien-Verwaltung.
     this._praemienFormularOffen = false;
     this._bearbeitePraemieId = null;
+    // Aktiver Tab der Panel-Navigation. "benutzer" ist für ALLE
+    // Benutzer sichtbar, die übrigen Tabs nur für Administratoren
+    // (siehe _render() - fällt automatisch auf "benutzer" zurück,
+    // falls der aktive Tab für die aktuellen Rechte nicht existiert).
+    this._aktiverTab = "benutzer";
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -371,6 +380,25 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const uebersichtsSensor = this._findeUebersichtsSensor();
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
 
+    // Tab-Definitionen: "benutzer" ist für ALLE sichtbar, alle
+    // anderen nur für Administratoren.
+    const tabs = istAdmin
+      ? [
+          { id: "benutzer", label: "👤 Benutzer" },
+          { id: "freigaben", label: "⏳ Freigaben" },
+          { id: "verwaltung", label: "📋 Verwaltung" },
+          { id: "vorlagen", label: "🔁 Standardaufgaben" },
+          { id: "praemien", label: "🎁 Prämien" },
+        ]
+      : [{ id: "benutzer", label: "👤 Benutzer" }];
+
+    // Falls der zuletzt aktive Tab für die aktuellen Rechte nicht (mehr)
+    // existiert (z. B. Admin-Rechte entzogen), sicher auf "benutzer"
+    // zurückfallen statt eine leere Seite zu zeigen.
+    if (!tabs.some((t) => t.id === this._aktiverTab)) {
+      this._aktiverTab = "benutzer";
+    }
+
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
       <div class="wrapper">
@@ -379,74 +407,109 @@ class AufgabenScoreboardPanel extends HTMLElement {
           <h1>🏆 Aufgaben-Punktesystem</h1>
         </div>
 
-        <div class="abschnitt-kopf-mit-aktion">
-          <h2 class="rangliste-titel">🏆 Rangliste</h2>
-          ${
-            istAdmin
-              ? `<button class="btn-primary siegerehrung-btn" title="Ermittelt den/die Gewinner, erhöht deren Sieg-Zähler und setzt alle Punktestände zurück">Siegerehrung durchführen</button>`
-              : ""
-          }
-        </div>
+        ${
+          tabs.length > 1
+            ? `
+          <div class="tab-leiste">
+            ${tabs
+              .map(
+                (t) => `
+              <button
+                class="tab-btn ${this._aktiverTab === t.id ? "tab-btn-aktiv" : ""}"
+                data-tab-id="${t.id}"
+              >${t.label}</button>`
+              )
+              .join("")}
+          </div>
+        `
+            : ""
+        }
 
-        <div class="rangliste">
-          ${benutzerSensoren
-            .slice()
-            .sort((a, b) => Number(b.zustand.state) - Number(a.zustand.state))
-            .map((b) => {
-              const userId = b.zustand.attributes.user_id;
-              const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
-              const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
-              const siege = b.zustand.attributes.siege || 0;
-              const punktekonto = b.zustand.attributes.punktekonto;
-              return `
-              <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
-                <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
-                  ${this._escape(b.zustand.attributes.friendly_name || b.entityId)}
-                  <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
-                </span>
-                <div class="rang-rechts">
-                  ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
-                  ${
-                    punktekonto !== undefined
-                      ? `<span class="konto-badge" title="Prämien-Guthaben">💰 ${punktekonto}</span>`
-                      : ""
-                  }
-                  <span class="rang-punkte">${b.zustand.state} Pkt.</span>
-                  ${
-                    istAdmin
-                      ? `<button
-                          class="btn-secondary reset-punkte-btn"
-                          data-user-id="${userId}"
-                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                          title="Punktestand zurücksetzen"
-                        >Zurücksetzen</button>
-                        <button
-                          class="btn-secondary reset-siege-btn"
-                          data-user-id="${userId}"
-                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                          title="Sieg-Zähler zurücksetzen"
-                        >Siege zurücksetzen</button>`
-                      : ""
-                  }
+        ${
+          this._aktiverTab === "benutzer"
+            ? `
+          <div class="abschnitt-kopf-mit-aktion">
+            <h2 class="rangliste-titel">🏆 Rangliste</h2>
+            ${
+              istAdmin
+                ? `<button class="btn-primary siegerehrung-btn" title="Ermittelt den/die Gewinner, erhöht deren Sieg-Zähler und setzt alle Punktestände zurück">Siegerehrung durchführen</button>`
+                : ""
+            }
+          </div>
+
+          <div class="rangliste">
+            ${benutzerSensoren
+              .slice()
+              .sort((a, b) => Number(b.zustand.state) - Number(a.zustand.state))
+              .map((b) => {
+                const userId = b.zustand.attributes.user_id;
+                const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
+                const kontoAufgeklappt = this._aufgeklappterPunktekontoUserId === userId;
+                const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
+                const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
+                const siege = b.zustand.attributes.siege || 0;
+                const punktekonto = b.zustand.attributes.punktekonto;
+                return `
+                <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
+                  <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
+                    ${this._escape(b.zustand.attributes.friendly_name || b.entityId)}
+                    <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
+                  </span>
+                  <div class="rang-rechts">
+                    ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
+                    ${
+                      punktekonto !== undefined
+                        ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
+                            💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
+                          </span>`
+                        : ""
+                    }
+                    <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                    ${
+                      istAdmin
+                        ? `<button
+                            class="btn-secondary reset-punkte-btn"
+                            data-user-id="${userId}"
+                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                            title="Punktestand zurücksetzen"
+                          >Zurücksetzen</button>
+                          <button
+                            class="btn-secondary reset-siege-btn"
+                            data-user-id="${userId}"
+                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                            title="Sieg-Zähler zurücksetzen"
+                          >Siege zurücksetzen</button>`
+                        : ""
+                    }
+                  </div>
                 </div>
-              </div>
-              ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}`;
-            })
-            .join("")}
-        </div>
+                ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
+                ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}`;
+              })
+              .join("")}
+          </div>
 
-        <div class="abschnitt">
-          <h2>Meine offenen Aufgaben</h2>
-          ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
-        </div>
+          <div class="abschnitt">
+            <h2>Meine offenen Aufgaben</h2>
+            ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
+          </div>
 
-        ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId)}
+          ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor)}
+        `
+            : ""
+        }
 
-        ${istAdmin ? this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${
+          istAdmin && this._aktiverTab === "freigaben"
+            ? `
+          ${this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren)}
+          ${this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren)}
+        `
+            : ""
+        }
+        ${istAdmin && this._aktiverTab === "verwaltung" ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "vorlagen" ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "praemien" ? this._renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
     `;
 
@@ -565,6 +628,40 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `;
   }
 
+  /**
+   * Eigenständiger, aufklappbarer Punktekonto-Verlauf (bewusst getrennt
+   * von _renderVerlauf() oben, das die erledigten AUFGABEN zeigt) -
+   * listet Zugänge (Siegerehrung) und Abgänge (Prämien-Einlösung) in
+   * chronologischer Reihenfolge.
+   */
+  _renderPunktekontoVerlauf(guthaben, verlauf) {
+    return `
+      <div class="verlauf-bereich konto-verlauf-bereich">
+        <div class="konto-verlauf-guthaben">💰 Aktuelles Guthaben: ${guthaben} Punkte</div>
+        ${
+          !verlauf || verlauf.length === 0
+            ? `<div class="hinweis-klein">Noch keine Punktekonto-Bewegungen.</div>`
+            : verlauf
+                .map(
+                  (eintrag) => `
+          <div class="verlauf-eintrag">
+            <div class="verlauf-info">
+              <span class="verlauf-name">${this._escape(eintrag.reason)}</span>
+              <span class="verlauf-datum">${this._formatiereDatum(eintrag.timestamp)}</span>
+            </div>
+            <div class="verlauf-aktion">
+              <span class="punkte-badge ${eintrag.amount < 0 ? "punkte-badge-abgang" : ""}">
+                ${eintrag.amount > 0 ? "+" : ""}${eintrag.amount}
+              </span>
+            </div>
+          </div>`
+                )
+                .join("")
+        }
+      </div>
+    `;
+  }
+
   /** Formatiert einen ISO-8601-Zeitstempel als lesbares Datum (TT.MM.JJJJ, hh:mm). */
   _formatiereDatum(isoZeitstempel) {
     try {
@@ -631,13 +728,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * Sensor überhaupt ein "punktekonto"-Attribut besitzt - fehlt es,
    * ist das Feature serverseitig deaktiviert, siehe sensor.py).
    */
-  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId) {
+  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor) {
     const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
     if (!eigener || eigener.zustand.attributes.punktekonto === undefined) {
       return "";
     }
     const guthaben = eigener.zustand.attributes.punktekonto;
-    const praemien = this._alleVorlagenSensorAttribute(benutzerSensoren, "praemien");
+    const praemien = uebersichtsSensor ? uebersichtsSensor.attributes.praemien || [] : [];
 
     return `
       <div class="abschnitt">
@@ -674,16 +771,6 @@ class AufgabenScoreboardPanel extends HTMLElement {
         }
       </div>
     `;
-  }
-
-  /** Kleiner Helfer: liest ein Listen-Attribut vom ersten Benutzer-Sensor, der es besitzt (alle teilen sich dieselben globalen Listen). */
-  _alleVorlagenSensorAttribute(benutzerSensoren, attributName) {
-    for (const b of benutzerSensoren) {
-      if (Array.isArray(b.zustand.attributes[attributName])) {
-        return b.zustand.attributes[attributName];
-      }
-    }
-    return [];
   }
 
   /** Admin-Bereich "Wartet auf Freigabe (Prämien)": angefragte Einlösungen, die noch bestätigt werden müssen. */
@@ -1371,6 +1458,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     }
 
+    this.shadowRoot.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._aktiverTab = ev.target.getAttribute("data-tab-id");
+        this._render();
+      });
+    });
+
     this.shadowRoot.querySelectorAll(".eigene-erledigen").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         this._aufgabeErledigen(ev.target.getAttribute("data-task-id"), eigeneUserId);
@@ -1381,6 +1475,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
       el.addEventListener("click", () => {
         const userId = el.getAttribute("data-user-id");
         this._aufgeklappterVerlaufUserId = this._aufgeklappterVerlaufUserId === userId ? null : userId;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".konto-badge-klickbar").forEach((el) => {
+      el.addEventListener("click", () => {
+        const userId = el.getAttribute("data-user-id");
+        this._aufgeklappterPunktekontoUserId = this._aufgeklappterPunktekontoUserId === userId ? null : userId;
         this._render();
       });
     });
@@ -1856,6 +1958,33 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .menu-btn:hover {
         opacity: 1;
       }
+      .tab-leiste {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 8px;
+        margin-bottom: 24px;
+        border-bottom: 1px solid var(--divider-color, #eee);
+      }
+      .tab-btn {
+        flex-shrink: 0;
+        background: none;
+        border: none;
+        border-bottom: 3px solid transparent;
+        border-radius: 0;
+        padding: 8px 12px;
+        font-size: 0.95em;
+        font-weight: 500;
+        color: var(--secondary-text-color);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .tab-btn-aktiv {
+        color: var(--primary-color);
+        border-bottom-color: var(--primary-color);
+        font-weight: 700;
+      }
       h2 {
         font-size: 1.15em;
         color: var(--primary-text-color);
@@ -1895,6 +2024,22 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .konto-badge {
         font-size: 0.85em;
         white-space: nowrap;
+      }
+      .konto-badge-klickbar {
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        user-select: none;
+      }
+      .konto-verlauf-guthaben {
+        font-weight: 600;
+        padding: 6px 0 10px;
+        color: var(--primary-text-color);
+      }
+      .punkte-badge-abgang {
+        background: rgba(var(--rgb-danger-color, 244,67,54), 0.12);
+        color: var(--error-color, #f44336);
       }
       .abschnitt-kopf-mit-aktion {
         display: flex;

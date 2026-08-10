@@ -144,8 +144,10 @@ class BenutzerPunkteSensor(_BasisSensor):
           "ruecknehmbar"-Flag für die Rücknahme-Funktion.
         - siege: Anzahl gewonnener Siegerehrungen (dauerhaft, übersteht
           normale Punktestand-Resets - siehe async_perform_awards()).
-        - punktekonto / wartende_praemien_eigene: NUR vorhanden, wenn das
-          Prämien-System aktiviert ist (siehe Options-Flow).
+        - punktekonto / eigene_praemien_verlauf / punktekonto_verlauf:
+          NUR vorhanden, wenn das Prämien-System aktiviert ist (siehe
+          Options-Flow). punktekonto_verlauf enthält die einzelnen
+          Zugänge (Siegerehrung) und Abgänge (Prämien-Einlösung).
         - user_id: Die interne Home-Assistant-Benutzer-ID (wird vom
           Sidebar-Panel benötigt, um Sensoren Benutzern zuzuordnen und
           Service-Aufrufe korrekt zu adressieren).
@@ -185,6 +187,7 @@ class BenutzerPunkteSensor(_BasisSensor):
         if self._praemien_aktiviert:
             attribute["punktekonto"] = self._manager.get_points_account(self._user_id)
             attribute["eigene_praemien_verlauf"] = self._manager.get_redemptions_for_user(self._user_id)
+            attribute["punktekonto_verlauf"] = self._manager.get_points_history_for_user(self._user_id)
         return attribute
 
 
@@ -220,3 +223,4 @@ class AlleOffenenAufgabenSensor(_BasisSensor):
             attribute["praemien"] = self._manager.get_all_rewards()
             attribute["wartende_praemien"] = self._manager.get_pending_redemptions()
         return attribute
+
