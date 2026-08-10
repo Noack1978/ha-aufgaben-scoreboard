@@ -44,6 +44,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Erledigungs-Verlauf in der Rangliste gerade aufgeklappt ist -
     // null = keiner. Immer nur einer gleichzeitig aufgeklappt.
     this._aufgeklappterVerlaufUserId = null;
+    // Analog, aber für den EIGENSTÄNDIGEN Punktekonto-Verlauf (Zugänge/
+    // Abgänge) - bewusst getrennt vom Aufgaben-Verlauf oben, damit
+    // beide unabhängig voneinander auf-/zugeklappt werden können.
+    this._aufgeklappterPunktekontoUserId = null;
     // Analog zum Vorlagen-Formular, aber für die Prämien-Verwaltung.
     this._praemienFormularOffen = false;
     this._bearbeitePraemieId = null;
@@ -395,7 +399,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
             .map((b) => {
               const userId = b.zustand.attributes.user_id;
               const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
+              const kontoAufgeklappt = this._aufgeklappterPunktekontoUserId === userId;
               const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
+              const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
               const siege = b.zustand.attributes.siege || 0;
               const punktekonto = b.zustand.attributes.punktekonto;
               return `
@@ -408,7 +414,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
                   ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
                   ${
                     punktekonto !== undefined
-                      ? `<span class="konto-badge" title="Prämien-Guthaben">💰 ${punktekonto}</span>`
+                      ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
+                          💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
+                        </span>`
                       : ""
                   }
                   <span class="rang-punkte">${b.zustand.state} Pkt.</span>
@@ -430,7 +438,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
                   }
                 </div>
               </div>
-              ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}`;
+              ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
+              ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}`;
             })
             .join("")}
         </div>
@@ -561,6 +570,40 @@ class AufgabenScoreboardPanel extends HTMLElement {
           </div>`
           )
           .join("")}
+      </div>
+    `;
+  }
+
+  /**
+   * Eigenständiger, aufklappbarer Punktekonto-Verlauf (bewusst getrennt
+   * von _renderVerlauf() oben, das die erledigten AUFGABEN zeigt) -
+   * listet Zugänge (Siegerehrung) und Abgänge (Prämien-Einlösung) in
+   * chronologischer Reihenfolge.
+   */
+  _renderPunktekontoVerlauf(guthaben, verlauf) {
+    return `
+      <div class="verlauf-bereich konto-verlauf-bereich">
+        <div class="konto-verlauf-guthaben">💰 Aktuelles Guthaben: ${guthaben} Punkte</div>
+        ${
+          !verlauf || verlauf.length === 0
+            ? `<div class="hinweis-klein">Noch keine Punktekonto-Bewegungen.</div>`
+            : verlauf
+                .map(
+                  (eintrag) => `
+          <div class="verlauf-eintrag">
+            <div class="verlauf-info">
+              <span class="verlauf-name">${this._escape(eintrag.reason)}</span>
+              <span class="verlauf-datum">${this._formatiereDatum(eintrag.timestamp)}</span>
+            </div>
+            <div class="verlauf-aktion">
+              <span class="punkte-badge ${eintrag.amount < 0 ? "punkte-badge-abgang" : ""}">
+                ${eintrag.amount > 0 ? "+" : ""}${eintrag.amount}
+              </span>
+            </div>
+          </div>`
+                )
+                .join("")
+        }
       </div>
     `;
   }
@@ -1375,6 +1418,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".konto-badge-klickbar").forEach((el) => {
+      el.addEventListener("click", () => {
+        const userId = el.getAttribute("data-user-id");
+        this._aufgeklappterPunktekontoUserId = this._aufgeklappterPunktekontoUserId === userId ? null : userId;
+        this._render();
+      });
+    });
+
     this.shadowRoot.querySelectorAll(".praemie-einloesen-btn").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         const rewardName = ev.target.getAttribute("data-reward-name");
@@ -1885,6 +1936,22 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .konto-badge {
         font-size: 0.85em;
         white-space: nowrap;
+      }
+      .konto-badge-klickbar {
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        user-select: none;
+      }
+      .konto-verlauf-guthaben {
+        font-weight: 600;
+        padding: 6px 0 10px;
+        color: var(--primary-text-color);
+      }
+      .punkte-badge-abgang {
+        background: rgba(var(--rgb-danger-color, 244,67,54), 0.12);
+        color: var(--error-color, #f44336);
       }
       .abschnitt-kopf-mit-aktion {
         display: flex;
