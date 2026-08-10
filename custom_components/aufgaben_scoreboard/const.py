@@ -74,6 +74,20 @@ EVENT_TEMPLATE_ADDED = f"{DOMAIN}_template_added"
 EVENT_TEMPLATE_UPDATED = f"{DOMAIN}_template_updated"
 EVENT_TEMPLATE_REMOVED = f"{DOMAIN}_template_removed"
 
+# Siegerehrung: ermittelt den/die Benutzer mit dem höchsten Punktestand,
+# erhöht deren Sieg-Zähler, schreibt bei aktiviertem Prämien-System die
+# Punktestände aufs Punktekonto gut und setzt danach ALLE Punktestände
+# gleichzeitig zurück (neue Runde beginnt).
+EVENT_SIEGERERUNG_DURCHGEFUEHRT = f"{DOMAIN}_siegerehrung_durchgefuehrt"
+
+# Prämien-System (optional per Options-Flow aktivierbar): Punktekonto,
+# das bei der Siegerehrung gespeist wird, und Prämien, die gegen
+# gesammeltes Guthaben eingelöst werden können (Freigabe-Workflow analog
+# zu Aufgaben-Erledigungen).
+EVENT_REWARD_REDEMPTION_REQUESTED = f"{DOMAIN}_reward_redemption_requested"
+EVENT_REWARD_REDEMPTION_APPROVED = f"{DOMAIN}_reward_redemption_approved"
+EVENT_REWARD_REDEMPTION_REJECTED = f"{DOMAIN}_reward_redemption_rejected"
+
 # -----------------------------------------------------------------------
 # Service-Namen (aufrufbar z. B. in Automationen/Skripten sowie über das
 # mitgelieferte Sidebar-Panel).
@@ -98,6 +112,18 @@ SERVICE_UPDATE_TEMPLATE = "update_template"
 SERVICE_REMOVE_TEMPLATE = "remove_template"
 SERVICE_CREATE_TASK_FROM_TEMPLATE = "create_task_from_template"
 
+# Siegerehrung
+SERVICE_PERFORM_AWARDS = "perform_awards"
+SERVICE_RESET_WINS = "reset_wins"
+
+# Prämien-System
+SERVICE_ADD_REWARD = "add_reward"
+SERVICE_UPDATE_REWARD = "update_reward"
+SERVICE_REMOVE_REWARD = "remove_reward"
+SERVICE_REQUEST_REDEMPTION = "request_redemption"
+SERVICE_APPROVE_REDEMPTION = "approve_redemption"
+SERVICE_REJECT_REDEMPTION = "reject_redemption"
+
 # -----------------------------------------------------------------------
 # Attribut-/Feld-Schlüssel, die sowohl in Service-Aufrufen als auch in
 # den Attributen der Sensor-Entitäten verwendet werden.
@@ -110,6 +136,21 @@ ATTR_SCORE = "score"
 ATTR_USER_ID = "user_id"
 ATTR_ASSIGNED_TO = "assigned_to"
 ATTR_COMPLETION_ID = "completion_id"
+
+# Prämien-System
+ATTR_REWARD_ID = "reward_id"
+ATTR_REDEMPTION_ID = "redemption_id"
+ATTR_COST = "cost"
+ATTR_REWARD_TYPE = "reward_type"
+ATTR_SWITCH_ENTITY_ID = "switch_entity_id"
+ATTR_DURATION_MINUTES = "duration_minutes"
+
+REWARD_TYPE_GENERIC = "generic"
+REWARD_TYPE_INTERNET_TIME = "internet_time"
+
+REDEMPTION_STATUS_PENDING = "pending_approval"
+REDEMPTION_STATUS_APPROVED = "approved"
+REDEMPTION_STATUS_REJECTED = "rejected"
 
 # -----------------------------------------------------------------------
 # Freigabe-Workflow (Erledigung -> Prüfung durch Admin -> Punkte)
@@ -179,3 +220,8 @@ ALL_TASKS_SENSOR_UNIQUE_ID = f"{DOMAIN}_alle_offenen_aufgaben"
 # -----------------------------------------------------------------------
 
 OPTION_ENABLED_USERS = "enabled_users"
+
+# Prämien-System (Punktekonto + einlösbare Prämien) ist standardmäßig
+# AUS - nur wer es explizit aktiviert, sieht die zugehörigen
+# Panel-Bereiche und Sensor-Attribute.
+OPTION_REWARDS_ENABLED = "rewards_enabled"

@@ -18,7 +18,9 @@ Konfigurieren") auswählen, welche Home-Assistant-Benutzer von der
 Integration berücksichtigt werden sollen - also einen eigenen
 Punkte-Sensor bekommen und in den Zuweisungslisten (neue Aufgabe
 anlegen/bearbeiten) auswählbar sind. Damit lassen sich z. B. technische
-Benutzer/Integrations-Accounts gezielt ausblenden.
+Benutzer/Integrations-Accounts gezielt ausblenden. Zusätzlich lässt sich
+dort das optionale Prämien-System (Punktekonto + einlösbare Prämien)
+ein-/ausschalten - standardmäßig deaktiviert.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
-from .const import DOMAIN, OPTION_ENABLED_USERS
+from .const import DOMAIN, OPTION_ENABLED_USERS, OPTION_REWARDS_ENABLED
 
 
 class AufgabenScoreboardConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -82,7 +84,7 @@ class AufgabenScoreboardOptionsFlow(OptionsFlowWithReload):
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Einziger Schritt: Mehrfachauswahl der zu berücksichtigenden Benutzer."""
+        """Einziger Schritt: Mehrfachauswahl der berücksichtigten Benutzer + Prämien-System ein-/ausschalten."""
         alle_benutzer = [
             benutzer
             for benutzer in await self.hass.auth.async_get_users()
@@ -93,7 +95,10 @@ class AufgabenScoreboardOptionsFlow(OptionsFlowWithReload):
         if user_input is not None:
             return self.async_create_entry(
                 title="",
-                data={OPTION_ENABLED_USERS: user_input[OPTION_ENABLED_USERS]},
+                data={
+                    OPTION_ENABLED_USERS: user_input[OPTION_ENABLED_USERS],
+                    OPTION_REWARDS_ENABLED: user_input.get(OPTION_REWARDS_ENABLED, False),
+                },
             )
 
         # Vorbelegung: bisherige Auswahl aus den Options, oder - falls die
@@ -108,6 +113,7 @@ class AufgabenScoreboardOptionsFlow(OptionsFlowWithReload):
         # Vorbelegung entfernen, damit der Selector keine "verwaisten"
         # Werte anzeigt.
         vorbelegung = [uid for uid in bisherige_auswahl if uid in gueltige_ids]
+        praemien_vorbelegung = self.config_entry.options.get(OPTION_REWARDS_ENABLED, False)
 
         schema = vol.Schema(
             {
@@ -120,7 +126,8 @@ class AufgabenScoreboardOptionsFlow(OptionsFlowWithReload):
                         multiple=True,
                         mode=SelectSelectorMode.LIST,
                     )
-                )
+                ),
+                vol.Required(OPTION_REWARDS_ENABLED, default=praemien_vorbelegung): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

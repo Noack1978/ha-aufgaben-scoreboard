@@ -28,11 +28,20 @@ Benutzern zugewiesen werden.
   **Multiscoring** (eigene Aufgabe pro zugewiesenem Benutzer) sowie
   automatischer Anlage per **Entitäts-Trigger** und/oder **Zeitplan**
   (alle X Tage oder wöchentlich an einem festen Wochentag)
+- **Siegerehrung**: ermittelt den/die Benutzer mit dem höchsten
+  Punktestand (dauerhafter Sieg-Zähler pro Benutzer) und setzt
+  anschließend alle Punktestände für eine neue Runde zurück
+- **Prämien-System** (optional aktivierbar): Punktekonto, das bei der
+  Siegerehrung gespeist wird, sowie einlösbare Prämien – generisch (nur
+  Protokollierung) oder "Internet-Zeit" (schaltet eine hinterlegte
+  Entität für konfigurierbare Dauer ein, übersteht HA-Neustarts)
 - **Services** für Automationen/Skripte: `add_task`, `update_task`,
   `remove_task`, `assign_task`, `unassign_task`, `complete_task`,
   `approve_task`, `reject_task`, `undo_completion`, `reset_score`,
-  `add_template`, `update_template`, `remove_template`,
-  `create_task_from_template`
+  `perform_awards`, `reset_wins`, `add_template`, `update_template`,
+  `remove_template`, `create_task_from_template`, `add_reward`,
+  `update_reward`, `remove_reward`, `request_redemption`,
+  `approve_redemption`, `reject_redemption`
 - Daten werden lokal in der Home-Assistant-Storage gespeichert – keine
   Cloud, keine externen Abhängigkeiten
 
@@ -172,6 +181,53 @@ Benutzer. In der Übersicht erscheint dadurch pro Benutzer eine eigene
 Karte; erledigt jemand seine, verschwindet nur diese – die Aufgaben der
 übrigen zugewiesenen Benutzer bleiben unberührt bestehen.
 
+### Siegerehrung
+
+Der Button „Siegerehrung durchführen" (nur für Administratoren, oberhalb
+der Rangliste) ermittelt den/die Benutzer mit dem aktuell höchsten
+Punktestand – bei Gleichstand gewinnen **alle** Führenden gleichermaßen,
+ein Punktestand von 0 zählt nicht als Sieg. Vor der Bestätigung zeigt
+ein Dialog an, wer gerade führt. Nach der Durchführung:
+
+- Der **Sieg-Zähler** der Gewinner erhöht sich dauerhaft um 1 (🏆-Badge
+  in der Rangliste) – übersteht auch normale Punktestand-Resets.
+- **Alle** Punktestände werden gleichzeitig auf 0 zurückgesetzt, eine
+  neue Runde beginnt. Die Erledigungs-Historie bleibt dabei (anders als
+  beim einzelnen „Zurücksetzen"-Button) erhalten.
+- Ist das Prämien-System aktiviert (siehe unten), wird zusätzlich jedem
+  Benutzer sein Punktestand vor dem Reset aufs Punktekonto gutgeschrieben.
+
+Der Sieg-Zähler lässt sich pro Benutzer separat über „Siege
+zurücksetzen" auf 0 setzen, unabhängig vom Punktestand.
+
+### Prämien-System (optional)
+
+Standardmäßig **deaktiviert**. Aktivierbar über **Einstellungen →
+Geräte & Dienste → Aufgaben-Punktesystem → Konfigurieren**. Nach
+Aktivierung bekommt jeder Benutzer ein **Punktekonto** (💰-Badge in der
+Rangliste), das bei jeder Siegerehrung um seinen jeweiligen Punktestand
+wächst – ein laufendes Guthaben über beliebig viele Runden hinweg, kein
+Rundenlimit.
+
+Administratoren legen im Bereich „Prämien verwalten" Prämien mit einem
+Punktepreis an:
+
+- **Generisch**: reiner Eintrag, keine automatische Aktion – nur
+  Protokollierung + Event (`aufgaben_scoreboard_reward_redemption_*`),
+  z. B. für eigene Automationen wie eine Admin-Benachrichtigung.
+- **Internet-Zeit**: schaltet eine hinterlegte `switch`-Entität für eine
+  konfigurierbare Dauer ein und nach Ablauf automatisch wieder aus –
+  übersteht dabei auch einen Home-Assistant-Neustart während der
+  laufenden Zeit (die verbleibende Restzeit wird beim Start geprüft und
+  ggf. sofort nachgeholt).
+
+Benutzer sehen ihr Guthaben und die verfügbaren Prämien im Bereich „Mein
+Punktekonto" und können dort „Einlösen" anfragen – der „Einlösen"-Button
+ist deaktiviert, solange das Guthaben nicht ausreicht. Wie bei der
+Aufgaben-Erledigung muss ein Administrator die Anfrage erst freigeben
+(Bereich „Prämien-Einlösungen zur Freigabe"), bevor die Punkte
+abgebucht bzw. eine Internet-Zeit-Entität geschaltet wird.
+
 ### Custom Card im Dashboard
 
 Über den Dashboard-Editor eine neue Karte hinzufügen und
@@ -294,6 +350,14 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.reject_task`   | Erledigung ablehnen, Aufgabe wird wieder offen          | ✅        |
 | `aufgaben_scoreboard.undo_completion` | Bereits freigegebene Erledigung nachträglich zurücknehmen (Grenzen: 7 Tage / letzte 20 Einträge) | ✅ |
 | `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen (löscht dabei auch dessen Erledigungs-Historie) | ✅ |
+| `aufgaben_scoreboard.perform_awards` | Siegerehrung durchführen: Sieg-Zähler des/der Gewinner +1, danach alle Punktestände zurücksetzen | ✅ |
+| `aufgaben_scoreboard.reset_wins`    | Sieg-Zähler eines Benutzers auf 0 zurücksetzen         | ✅        |
+| `aufgaben_scoreboard.add_reward`    | Prämie anlegen (nur bei aktiviertem Prämien-System relevant) | ✅   |
+| `aufgaben_scoreboard.update_reward` | Prämie nachträglich bearbeiten                         | ✅        |
+| `aufgaben_scoreboard.remove_reward` | Prämie löschen                                         | ✅        |
+| `aufgaben_scoreboard.request_redemption` | Prämie anfragen (wartet danach auf Freigabe, noch kein Punktabzug) | Nein¹ |
+| `aufgaben_scoreboard.approve_redemption` | Einlösung freigeben, Punkte werden abgebucht (+ ggf. Entität geschaltet) | ✅ |
+| `aufgaben_scoreboard.reject_redemption` | Einlösung ablehnen, kein Punktabzug                 | ✅        |
 | `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen, optional mit Entitäts- und/oder Zeitplan-Trigger | ✅        |
 | `aufgaben_scoreboard.update_template` | Standardaufgabe nachträglich bearbeiten               | ✅        |
 | `aufgaben_scoreboard.remove_template` | Standardaufgabe löschen                               | ✅        |

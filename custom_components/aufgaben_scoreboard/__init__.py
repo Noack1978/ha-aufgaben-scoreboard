@@ -60,13 +60,19 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     ATTR_ASSIGNED_TO,
     ATTR_COMPLETION_ID,
+    ATTR_COST,
     ATTR_DESCRIPTION,
+    ATTR_DURATION_MINUTES,
     ATTR_MULTISCORING,
     ATTR_NAME,
+    ATTR_REDEMPTION_ID,
+    ATTR_REWARD_ID,
+    ATTR_REWARD_TYPE,
     ATTR_SCHEDULE_INTERVAL,
     ATTR_SCHEDULE_TYPE,
     ATTR_SCHEDULE_WEEKDAY,
     ATTR_SCORE,
+    ATTR_SWITCH_ENTITY_ID,
     ATTR_TASK_ID,
     ATTR_TEMPLATE_ID,
     ATTR_TRIGGER_ENTITY_ID,
@@ -76,25 +82,36 @@ from .const import (
     DOMAIN,
     FRONTEND_URL_BASE,
     INTEGRATION_VERSION,
+    OPTION_REWARDS_ENABLED,
     PANEL_ICON,
     PANEL_JS_FILENAME,
     PANEL_TITLE,
     PANEL_URL_PATH,
     PLATFORMS,
+    REWARD_TYPE_GENERIC,
+    REWARD_TYPE_INTERNET_TIME,
     SCHEDULE_TYPE_DAYS,
     SCHEDULE_TYPE_WEEKLY,
+    SERVICE_ADD_REWARD,
     SERVICE_ADD_TASK,
     SERVICE_ADD_TEMPLATE,
+    SERVICE_APPROVE_REDEMPTION,
     SERVICE_APPROVE_TASK,
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
     SERVICE_CREATE_TASK_FROM_TEMPLATE,
+    SERVICE_PERFORM_AWARDS,
+    SERVICE_REJECT_REDEMPTION,
     SERVICE_REJECT_TASK,
+    SERVICE_REMOVE_REWARD,
     SERVICE_REMOVE_TASK,
     SERVICE_REMOVE_TEMPLATE,
+    SERVICE_REQUEST_REDEMPTION,
     SERVICE_RESET_SCORE,
+    SERVICE_RESET_WINS,
     SERVICE_UNASSIGN_TASK,
     SERVICE_UNDO_COMPLETION,
+    SERVICE_UPDATE_REWARD,
     SERVICE_UPDATE_TASK,
     SERVICE_UPDATE_TEMPLATE,
 )
@@ -215,6 +232,56 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
 SCHEMA_REMOVE_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
 
 SCHEMA_CREATE_TASK_FROM_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
+
+# -----------------------------------------------------------------------
+# Siegerehrung
+# -----------------------------------------------------------------------
+
+SCHEMA_PERFORM_AWARDS = vol.Schema({})
+
+SCHEMA_RESET_WINS = vol.Schema({vol.Required(ATTR_USER_ID): cv.string})
+
+# -----------------------------------------------------------------------
+# Prämien-System
+# -----------------------------------------------------------------------
+
+SCHEMA_ADD_REWARD = vol.Schema(
+    {
+        vol.Required(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION, default=""): cv.string,
+        vol.Required(ATTR_COST): vol.Coerce(int),
+        vol.Optional(ATTR_REWARD_TYPE, default=REWARD_TYPE_GENERIC): vol.In(
+            [REWARD_TYPE_GENERIC, REWARD_TYPE_INTERNET_TIME]
+        ),
+        vol.Optional(ATTR_SWITCH_ENTITY_ID): cv.entity_id,
+        vol.Optional(ATTR_DURATION_MINUTES): vol.Coerce(int),
+    }
+)
+
+SCHEMA_UPDATE_REWARD = vol.Schema(
+    {
+        vol.Required(ATTR_REWARD_ID): cv.string,
+        vol.Optional(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION): cv.string,
+        vol.Optional(ATTR_COST): vol.Coerce(int),
+        vol.Optional(ATTR_REWARD_TYPE): vol.In([REWARD_TYPE_GENERIC, REWARD_TYPE_INTERNET_TIME]),
+        vol.Optional(ATTR_SWITCH_ENTITY_ID): vol.Any(cv.entity_id, ""),
+        vol.Optional(ATTR_DURATION_MINUTES): vol.Coerce(int),
+    }
+)
+
+SCHEMA_REMOVE_REWARD = vol.Schema({vol.Required(ATTR_REWARD_ID): cv.string})
+
+SCHEMA_REQUEST_REDEMPTION = vol.Schema(
+    {
+        vol.Required(ATTR_REWARD_ID): cv.string,
+        vol.Optional(ATTR_USER_ID): cv.string,
+    }
+)
+
+SCHEMA_APPROVE_REDEMPTION = vol.Schema({vol.Required(ATTR_REDEMPTION_ID): cv.string})
+
+SCHEMA_REJECT_REDEMPTION = vol.Schema({vol.Required(ATTR_REDEMPTION_ID): cv.string})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -381,6 +448,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # aktivieren - inkl. einmaliger Nachhol-Prüfung für den aktuellen Tag.
     manager.async_setup_schedule()
 
+    # Internet-Zeit-Prämien: für alle bereits freigegebenen, noch aktiven
+    # Einlösungen die Restlaufzeit prüfen und ggf. sofort nachholend
+    # abschalten oder den Abschalt-Timer neu setzen (siehe Docstring von
+    # async_setup_reward_timers() - relevant nach einem HA-Neustart,
+    # während dessen der ursprüngliche Timer verloren ging).
+    manager.async_setup_reward_timers()
+
     # ------------------------------------------------------------------
     # 2. Sensor-Plattform laden (ein Sensor pro Benutzer + Übersicht)
     # ------------------------------------------------------------------
@@ -389,7 +463,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ------------------------------------------------------------------
     # 3. Services registrieren
     # ------------------------------------------------------------------
-    _async_register_services(hass, manager)
+    _async_register_services(hass, entry, manager)
 
     # ------------------------------------------------------------------
     # 4. Frontend (Sidebar-Panel) registrieren
@@ -459,6 +533,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_REJECT_TASK,
                 SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
+                SERVICE_PERFORM_AWARDS,
+                SERVICE_RESET_WINS,
+                SERVICE_ADD_REWARD,
+                SERVICE_UPDATE_REWARD,
+                SERVICE_REMOVE_REWARD,
+                SERVICE_REQUEST_REDEMPTION,
+                SERVICE_APPROVE_REDEMPTION,
+                SERVICE_REJECT_REDEMPTION,
                 SERVICE_ADD_TEMPLATE,
                 SERVICE_UPDATE_TEMPLATE,
                 SERVICE_REMOVE_TEMPLATE,
@@ -499,7 +581,7 @@ async def _ist_admin(hass: HomeAssistant, call: ServiceCall) -> bool:
     return bool(benutzer and benutzer.is_admin)
 
 
-def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardManager) -> None:
+def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: AufgabenScoreboardManager) -> None:
     """Registriert alle von dieser Integration bereitgestellten Services."""
 
     async def handle_add_task(call: ServiceCall) -> None:
@@ -590,6 +672,84 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             return
         await manager.async_reset_score(call.data[ATTR_USER_ID])
 
+    async def handle_perform_awards(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Siegerehrung durchzuführen - abgelehnt.")
+            return
+        praemien_aktiviert = entry.options.get(OPTION_REWARDS_ENABLED, False)
+        await manager.async_perform_awards(praemien_aktiviert)
+
+    async def handle_reset_wins(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, einen Sieg-Zähler zurückzusetzen - abgelehnt.")
+            return
+        await manager.async_reset_wins(call.data[ATTR_USER_ID])
+
+    async def handle_add_reward(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Prämie anzulegen - abgelehnt.")
+            return
+        await manager.async_add_reward(
+            name=call.data[ATTR_NAME],
+            description=call.data.get(ATTR_DESCRIPTION, ""),
+            cost=call.data[ATTR_COST],
+            reward_type=call.data.get(ATTR_REWARD_TYPE, REWARD_TYPE_GENERIC),
+            switch_entity_id=call.data.get(ATTR_SWITCH_ENTITY_ID),
+            duration_minutes=call.data.get(ATTR_DURATION_MINUTES),
+        )
+
+    async def handle_update_reward(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Prämie zu bearbeiten - abgelehnt.")
+            return
+        await manager.async_update_reward(
+            reward_id=call.data[ATTR_REWARD_ID],
+            name=call.data.get(ATTR_NAME),
+            description=call.data.get(ATTR_DESCRIPTION),
+            cost=call.data.get(ATTR_COST),
+            reward_type=call.data.get(ATTR_REWARD_TYPE),
+            switch_entity_id=call.data.get(ATTR_SWITCH_ENTITY_ID),
+            duration_minutes=call.data.get(ATTR_DURATION_MINUTES),
+        )
+
+    async def handle_remove_reward(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Prämie zu löschen - abgelehnt.")
+            return
+        await manager.async_remove_reward(call.data[ATTR_REWARD_ID])
+
+    async def handle_request_redemption(call: ServiceCall) -> None:
+        # Wird kein user_id mitgegeben, wird der aufrufende Benutzer
+        # verwendet - Normalfall bei Nutzung über das Sidebar-Panel.
+        user_id = call.data.get(ATTR_USER_ID) or call.context.user_id
+        if not user_id:
+            _LOGGER.error(
+                "request_redemption: Es konnte kein Benutzer ermittelt werden "
+                "(weder user_id angegeben noch Aufrufkontext vorhanden)."
+            )
+            return
+        # Ein normaler Benutzer darf nur FÜR SICH SELBST eine Prämie
+        # anfragen. Administratoren dürfen dies stellvertretend tun.
+        if call.context.user_id and call.context.user_id != user_id and not await _ist_admin(hass, call):
+            _LOGGER.warning(
+                "Benutzer hat versucht, eine Prämie für einen anderen Benutzer "
+                "anzufragen, ohne Administrator zu sein - abgelehnt."
+            )
+            return
+        await manager.async_request_redemption(call.data[ATTR_REWARD_ID], user_id)
+
+    async def handle_approve_redemption(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Einlösung freizugeben - abgelehnt.")
+            return
+        await manager.async_approve_redemption(call.data[ATTR_REDEMPTION_ID])
+
+    async def handle_reject_redemption(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Einlösung abzulehnen - abgelehnt.")
+            return
+        await manager.async_reject_redemption(call.data[ATTR_REDEMPTION_ID])
+
     async def handle_add_template(call: ServiceCall) -> None:
         if not await _ist_admin(hass, call):
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Standardaufgabe anzulegen - abgelehnt.")
@@ -646,6 +806,22 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_TASK, handle_complete_task, schema=SCHEMA_COMPLETE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_RESET_SCORE, handle_reset_score, schema=SCHEMA_RESET_SCORE)
+    hass.services.async_register(
+        DOMAIN, SERVICE_PERFORM_AWARDS, handle_perform_awards, schema=SCHEMA_PERFORM_AWARDS
+    )
+    hass.services.async_register(DOMAIN, SERVICE_RESET_WINS, handle_reset_wins, schema=SCHEMA_RESET_WINS)
+    hass.services.async_register(DOMAIN, SERVICE_ADD_REWARD, handle_add_reward, schema=SCHEMA_ADD_REWARD)
+    hass.services.async_register(DOMAIN, SERVICE_UPDATE_REWARD, handle_update_reward, schema=SCHEMA_UPDATE_REWARD)
+    hass.services.async_register(DOMAIN, SERVICE_REMOVE_REWARD, handle_remove_reward, schema=SCHEMA_REMOVE_REWARD)
+    hass.services.async_register(
+        DOMAIN, SERVICE_REQUEST_REDEMPTION, handle_request_redemption, schema=SCHEMA_REQUEST_REDEMPTION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_APPROVE_REDEMPTION, handle_approve_redemption, schema=SCHEMA_APPROVE_REDEMPTION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_REJECT_REDEMPTION, handle_reject_redemption, schema=SCHEMA_REJECT_REDEMPTION
+    )
     hass.services.async_register(DOMAIN, SERVICE_APPROVE_TASK, handle_approve_task, schema=SCHEMA_APPROVE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_REJECT_TASK, handle_reject_task, schema=SCHEMA_REJECT_TASK)
     hass.services.async_register(

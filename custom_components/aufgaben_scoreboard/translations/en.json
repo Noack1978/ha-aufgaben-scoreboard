@@ -13,10 +13,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Included users",
-        "description": "Choose which Home Assistant users should be considered by this integration. Only selected users get their own points sensor and can be chosen as responsible person when creating/editing tasks. This lets you hide technical users/integration accounts, for example.",
+        "title": "Included users & rewards system",
+        "description": "Choose which Home Assistant users should be considered by this integration. Only selected users get their own points sensor and can be chosen as responsible person when creating/editing tasks. This lets you hide technical users/integration accounts, for example. You can also enable the optional rewards system (points account + redeemable rewards) here.",
         "data": {
-          "enabled_users": "Included users"
+          "enabled_users": "Included users",
+          "rewards_enabled": "Enable rewards system"
         }
       }
     }

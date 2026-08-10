@@ -24,11 +24,15 @@ from typing import Any
 import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
 
 from .const import (
     EVENT_COMPLETION_UNDONE,
+    EVENT_REWARD_REDEMPTION_APPROVED,
+    EVENT_REWARD_REDEMPTION_REJECTED,
+    EVENT_REWARD_REDEMPTION_REQUESTED,
+    EVENT_SIEGERERUNG_DURCHGEFUEHRT,
     EVENT_TASK_ADDED,
     EVENT_TASK_APPROVED,
     EVENT_TASK_ASSIGNED,
@@ -40,6 +44,10 @@ from .const import (
     EVENT_TEMPLATE_ADDED,
     EVENT_TEMPLATE_REMOVED,
     EVENT_TEMPLATE_UPDATED,
+    REDEMPTION_STATUS_APPROVED,
+    REDEMPTION_STATUS_PENDING,
+    REDEMPTION_STATUS_REJECTED,
+    REWARD_TYPE_INTERNET_TIME,
     SCHEDULE_TYPE_DAYS,
     SCHEDULE_TYPE_WEEKLY,
     SIGNAL_UPDATE,
@@ -135,6 +143,56 @@ class AufgabenScoreboardManager:
             },
             ...
         },
+        "wins": {
+            "<user_id>": 3,  # Anzahl gewonnener Siegerehrungen - DAUERHAFT,
+                # übersteht (anders als "scores") normale Punktestand-Resets
+            ...
+        },
+        "points_account": {
+            "<user_id>": 120,  # laufendes Prämien-Guthaben, wird bei jeder
+                # Siegerehrung um den jeweiligen Punktestand erhöht und bei
+                # genehmigten Prämien-Einlösungen wieder abgebucht - nur
+                # relevant, wenn das Prämien-System aktiviert ist
+            ...
+        },
+        "rewards": {
+            "<reward_id>": {
+                "id": "<reward_id>",
+                "name": "Kinobesuch",
+                "description": "...",
+                "cost": 50,
+                "reward_type": "generic" | "internet_time",
+                "switch_entity_id": "<entity_id>" oder None,  # nur bei
+                    # "internet_time": die zu schaltende switch-Entität
+                "duration_minutes": 60,  # nur bei "internet_time"
+            },
+            ...
+        },
+        "redemptions": [
+            {
+                "redemption_id": "<uuid>",
+                "reward_id": "<reward_id>",
+                "reward_name": "Kinobesuch",  # zum Zeitpunkt der Anfrage
+                    # kopiert, damit der Verlauf auch nach Löschen/Ändern
+                    # der Prämie noch lesbar bleibt
+                "user_id": "...",
+                "cost": 50,
+                "reward_type": "generic" | "internet_time",
+                "status": "pending_approval" | "approved" | "rejected",
+                "requested_at": "...",
+                "approved_at": "..." oder None,
+                "switch_entity_id": "..." oder None,
+                "duration_minutes": ... oder None,
+                "activated_at": "..." oder None,   # nur "internet_time":
+                    # wann die switch-Entität eingeschaltet wurde
+                "deactivate_at": "..." oder None,  # geplanter Abschaltzeitpunkt
+                "deactivated": False,  # True, sobald tatsächlich abgeschaltet
+                    # (verhindert doppeltes Abschalten bzw. zeigt beim
+                    # HA-Neustart an, welche Einträge noch nachverfolgt
+                    # werden müssen - siehe async_setup_reward_timers())
+            },
+            ...
+        ],
     }
     """
 
@@ -146,6 +204,10 @@ class AufgabenScoreboardManager:
             "completions": [],
             "scores": {},
             "templates": {},
+            "wins": {},
+            "points_account": {},
+            "rewards": {},
+            "redemptions": [],
         }
         # Abmelde-Funktionen der aktuell abonnierten Entitäts-Trigger,
         # nach template_id - siehe sync_trigger_listeners().
@@ -153,6 +215,9 @@ class AufgabenScoreboardManager:
         # Abmelde-Funktion des täglichen Zeitplan-Listeners - siehe
         # async_setup_schedule().
         self._schedule_unsub: Any = None
+        # Abmelde-Funktionen der aktiven Internet-Zeit-Abschalt-Timer,
+        # nach redemption_id - siehe async_setup_reward_timers().
+        self._reward_timer_unsub: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Laden / Speichern
@@ -168,6 +233,10 @@ class AufgabenScoreboardManager:
             self._data["completions"] = gespeicherte_daten.get("completions", [])
             self._data["scores"] = gespeicherte_daten.get("scores", {})
             self._data["templates"] = gespeicherte_daten.get("templates", {})
+            self._data["wins"] = gespeicherte_daten.get("wins", {})
+            self._data["points_account"] = gespeicherte_daten.get("points_account", {})
+            self._data["rewards"] = gespeicherte_daten.get("rewards", {})
+            self._data["redemptions"] = gespeicherte_daten.get("redemptions", [])
 
         # Abwärtskompatibilität: Aufgaben, die vor Einführung der
         # Standardaufgaben-Funktion angelegt wurden, haben noch kein
@@ -203,6 +272,13 @@ class AufgabenScoreboardManager:
             vorlage.setdefault("schedule_weekday", None)
             vorlage.setdefault("schedule_anchor", None)
             vorlage.setdefault("schedule_last_triggered", None)
+
+        # Abwärtskompatibilität: Redemption-Einträge aus Versionen vor
+        # einer künftigen Feld-Erweiterung erhalten hier ebenfalls
+        # nachträglich sinnvolle Defaults (aktuell nur relevant, falls
+        # das Feature nachträglich um weitere Felder ergänzt wird).
+        for eintrag in self._data["redemptions"]:
+            eintrag.setdefault("deactivated", eintrag.get("status") != REDEMPTION_STATUS_APPROVED)
 
         _LOGGER.debug(
             "Aufgaben-Scoreboard-Daten geladen: %s Aufgabe(n), %s Standardaufgabe(n)",
@@ -602,6 +678,389 @@ class AufgabenScoreboardManager:
             "Punktestand von Benutzer '%s' wurde zurückgesetzt (inkl. %s gelöschter Verlaufs-Einträge).",
             user_id,
             entfernte_eintraege,
+        )
+
+    # ------------------------------------------------------------------
+    # Siegerehrung
+    # ------------------------------------------------------------------
+
+    async def async_perform_awards(self, praemien_aktiviert: bool) -> dict[str, Any]:
+        """
+        Führt die Siegerehrung durch:
+          1. Ermittelt den/die Benutzer mit dem aktuell höchsten
+             Punktestand (bei Gleichstand gewinnen ALLE gleichermaßen;
+             ein Punktestand von 0 gilt nicht als Sieg).
+          2. Erhöht deren Sieg-Zähler ("wins") um 1 - DAUERHAFT, bleibt
+             auch nach dem folgenden Punktestand-Reset erhalten.
+          3. Ist das Prämien-System aktiviert, wird JEDEM Benutzer sein
+             aktueller Punktestand vor dem Reset aufs Punktekonto
+             gutgeschrieben (unabhängig davon, ob er gewonnen hat).
+          4. Setzt ALLE Punktestände gleichzeitig auf 0 zurück (neue
+             Runde beginnt) - bewusst OHNE die Erledigungs-Historie zu
+             löschen (anders als async_reset_score): Die Historie soll
+             rundenübergreifend nachvollziehbar bleiben.
+
+        :param praemien_aktiviert: Ob das Prämien-System aktuell
+            eingeschaltet ist (kommt aus dem Options-Flow des
+            Config-Entries, der Manager kennt diese Einstellung nicht
+            selbst - siehe __init__.py).
+        :return: {"gewinner": [user_id, ...], "hoechststand": int}
+        """
+        if not self._data["scores"]:
+            _LOGGER.warning("Siegerehrung: Keine Punktestände vorhanden, nichts zu tun.")
+            return {"gewinner": [], "hoechststand": 0}
+
+        hoechststand = max(self._data["scores"].values())
+        gewinner = [
+            user_id
+            for user_id, punkte in self._data["scores"].items()
+            if punkte == hoechststand and punkte > 0
+        ]
+
+        for user_id in gewinner:
+            self._data["wins"][user_id] = self._data["wins"].get(user_id, 0) + 1
+
+        if praemien_aktiviert:
+            for user_id, punkte in self._data["scores"].items():
+                if punkte > 0:
+                    self._data["points_account"][user_id] = self._data["points_account"].get(user_id, 0) + punkte
+
+        for user_id in list(self._data["scores"].keys()):
+            self._data["scores"][user_id] = 0
+
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_SIEGERERUNG_DURCHGEFUEHRT,
+            {"gewinner": gewinner, "hoechststand": hoechststand},
+        )
+        if gewinner:
+            _LOGGER.info(
+                "Siegerehrung durchgeführt: Gewinner %s mit %s Punkten. Alle Punktestände zurückgesetzt.",
+                gewinner,
+                hoechststand,
+            )
+        else:
+            _LOGGER.info("Siegerehrung durchgeführt: Alle Punktestände waren 0, niemand hat gewonnen.")
+        return {"gewinner": gewinner, "hoechststand": hoechststand}
+
+    async def async_reset_wins(self, user_id: str) -> None:
+        """Setzt den Sieg-Zähler eines einzelnen Benutzers auf 0 zurück."""
+        self._data["wins"][user_id] = 0
+        await self._async_persist()
+        _LOGGER.info("Sieg-Zähler von Benutzer '%s' wurde zurückgesetzt.", user_id)
+
+    def get_wins(self, user_id: str) -> int:
+        """Liefert die Anzahl gewonnener Siegerehrungen eines Benutzers."""
+        return self._data["wins"].get(user_id, 0)
+
+    # ------------------------------------------------------------------
+    # Prämien-System (Punktekonto + einlösbare Prämien)
+    # ------------------------------------------------------------------
+
+    def get_points_account(self, user_id: str) -> int:
+        """Liefert das aktuelle Prämien-Guthaben eines Benutzers."""
+        return self._data["points_account"].get(user_id, 0)
+
+    def get_all_rewards(self) -> list[dict[str, Any]]:
+        """Liefert alle konfigurierten Prämien."""
+        return [copy.deepcopy(r) for r in self._data["rewards"].values()]
+
+    async def async_add_reward(
+        self,
+        name: str,
+        description: str,
+        cost: int,
+        reward_type: str,
+        switch_entity_id: str | None = None,
+        duration_minutes: int | None = None,
+    ) -> str:
+        """Legt eine neue Prämie an. :return: Die generierte Prämien-ID."""
+        reward_id = uuid.uuid4().hex
+        self._data["rewards"][reward_id] = {
+            "id": reward_id,
+            "name": name,
+            "description": description or "",
+            "cost": int(cost),
+            "reward_type": reward_type,
+            "switch_entity_id": switch_entity_id or None,
+            "duration_minutes": int(duration_minutes) if duration_minutes else None,
+        }
+        await self._async_persist()
+        _LOGGER.info("Neue Prämie angelegt: '%s' (%s Punkte)", name, cost)
+        return reward_id
+
+    async def async_update_reward(
+        self,
+        reward_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        cost: int | None = None,
+        reward_type: str | None = None,
+        switch_entity_id: str | None = None,
+        duration_minutes: int | None = None,
+    ) -> bool:
+        """Bearbeitet eine bestehende Prämie nachträglich. Nur angegebene Felder werden geändert."""
+        praemie = self._data["rewards"].get(reward_id)
+        if praemie is None:
+            _LOGGER.warning("Prämie '%s' nicht gefunden, kann nicht bearbeitet werden.", reward_id)
+            return False
+
+        if name is not None:
+            praemie["name"] = name
+        if description is not None:
+            praemie["description"] = description
+        if cost is not None:
+            praemie["cost"] = int(cost)
+        if reward_type is not None:
+            praemie["reward_type"] = reward_type
+        if switch_entity_id is not None:
+            praemie["switch_entity_id"] = switch_entity_id or None
+        if duration_minutes is not None:
+            praemie["duration_minutes"] = int(duration_minutes) if duration_minutes else None
+
+        await self._async_persist()
+        _LOGGER.info("Prämie '%s' wurde bearbeitet.", praemie.get("name"))
+        return True
+
+    async def async_remove_reward(self, reward_id: str) -> None:
+        """Entfernt eine Prämie. Bereits erfolgte Einlösungen bleiben in der Historie erhalten."""
+        praemie = self._data["rewards"].pop(reward_id, None)
+        if praemie is None:
+            _LOGGER.warning("Prämie '%s' existiert nicht, kann nicht entfernt werden.", reward_id)
+            return
+        await self._async_persist()
+        _LOGGER.info("Prämie entfernt: '%s'", praemie.get("name"))
+
+    def get_pending_redemptions(self) -> list[dict[str, Any]]:
+        """Liefert alle Einlösungs-Anfragen, die noch auf Admin-Freigabe warten."""
+        return [
+            copy.deepcopy(r) for r in self._data["redemptions"] if r["status"] == REDEMPTION_STATUS_PENDING
+        ]
+
+    def get_redemptions_for_user(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Liefert die letzten Einlösungen (jeden Status) eines Benutzers, neueste zuerst."""
+        eintraege = [copy.deepcopy(r) for r in self._data["redemptions"] if r["user_id"] == user_id]
+        eintraege.sort(key=lambda r: r["requested_at"], reverse=True)
+        return eintraege[:limit]
+
+    async def async_request_redemption(self, reward_id: str, user_id: str) -> bool:
+        """
+        Fordert eine Prämie an: prüft, ob genug Guthaben vorhanden ist,
+        und legt bei Erfolg eine Anfrage im Status "pending_approval" an
+        (analog zum Freigabe-Workflow bei Aufgaben) - es wird an dieser
+        Stelle noch NICHTS abgebucht, das passiert erst bei der
+        Admin-Freigabe (siehe async_approve_redemption).
+
+        :return: True bei Erfolg, False falls die Prämie nicht existiert
+            oder das Guthaben nicht ausreicht.
+        """
+        praemie = self._data["rewards"].get(reward_id)
+        if praemie is None:
+            _LOGGER.warning("Prämie '%s' nicht gefunden, keine Anfrage möglich.", reward_id)
+            return False
+
+        guthaben = self._data["points_account"].get(user_id, 0)
+        if guthaben < praemie["cost"]:
+            _LOGGER.warning(
+                "Benutzer '%s' hat nicht genug Guthaben für '%s' (%s < %s Punkte).",
+                user_id,
+                praemie["name"],
+                guthaben,
+                praemie["cost"],
+            )
+            return False
+
+        self._data["redemptions"].append(
+            {
+                "redemption_id": uuid.uuid4().hex,
+                "reward_id": reward_id,
+                "reward_name": praemie["name"],
+                "user_id": user_id,
+                "cost": praemie["cost"],
+                "reward_type": praemie["reward_type"],
+                "status": REDEMPTION_STATUS_PENDING,
+                "requested_at": _jetzt_iso(),
+                "approved_at": None,
+                "switch_entity_id": praemie.get("switch_entity_id"),
+                "duration_minutes": praemie.get("duration_minutes"),
+                "activated_at": None,
+                "deactivate_at": None,
+                "deactivated": False,
+            }
+        )
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_REWARD_REDEMPTION_REQUESTED,
+            {"reward_id": reward_id, "user_id": user_id},
+        )
+        _LOGGER.info(
+            "Benutzer '%s' hat Prämie '%s' angefragt - wartet auf Freigabe.", user_id, praemie["name"]
+        )
+        return True
+
+    async def async_approve_redemption(self, redemption_id: str) -> bool:
+        """
+        Gibt eine angefragte Prämien-Einlösung frei: bucht die Punkte
+        vom Guthaben ab und schaltet bei "internet_time"-Prämien die
+        hinterlegte switch-Entität für die konfigurierte Dauer ein.
+
+        :return: True bei Erfolg, False falls die Anfrage nicht existiert,
+            nicht mehr wartet, oder das Guthaben zwischenzeitlich (z. B.
+            durch eine andere, bereits freigegebene Anfrage) nicht mehr
+            ausreicht.
+        """
+        eintrag = self._finde_redemption(redemption_id)
+        if eintrag is None:
+            _LOGGER.warning("Einlösungs-Anfrage '%s' nicht gefunden.", redemption_id)
+            return False
+        if eintrag["status"] != REDEMPTION_STATUS_PENDING:
+            _LOGGER.warning(
+                "Einlösungs-Anfrage '%s' wartet nicht auf Freigabe (Status: '%s').",
+                redemption_id,
+                eintrag["status"],
+            )
+            return False
+
+        guthaben = self._data["points_account"].get(eintrag["user_id"], 0)
+        if guthaben < eintrag["cost"]:
+            _LOGGER.warning(
+                "Guthaben von Benutzer '%s' reicht nicht mehr für '%s' (%s < %s Punkte) - "
+                "Freigabe abgelehnt, bitte stattdessen ablehnen oder Guthaben prüfen.",
+                eintrag["user_id"],
+                eintrag["reward_name"],
+                guthaben,
+                eintrag["cost"],
+            )
+            return False
+
+        self._data["points_account"][eintrag["user_id"]] = guthaben - eintrag["cost"]
+        eintrag["status"] = REDEMPTION_STATUS_APPROVED
+        eintrag["approved_at"] = _jetzt_iso()
+
+        if eintrag["reward_type"] == REWARD_TYPE_INTERNET_TIME and eintrag.get("switch_entity_id"):
+            jetzt = dt_util.now()
+            eintrag["activated_at"] = jetzt.isoformat()
+            eintrag["deactivate_at"] = (jetzt + timedelta(minutes=eintrag["duration_minutes"])).isoformat()
+            await self.hass.services.async_call(
+                "homeassistant", "turn_on", {"entity_id": eintrag["switch_entity_id"]}, blocking=False
+            )
+            self._plane_abschaltung(eintrag)
+
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_REWARD_REDEMPTION_APPROVED,
+            {"redemption_id": redemption_id, "user_id": eintrag["user_id"]},
+        )
+        _LOGGER.info(
+            "Einlösung von '%s' durch Benutzer '%s' wurde freigegeben (-%s Punkte).",
+            eintrag["reward_name"],
+            eintrag["user_id"],
+            eintrag["cost"],
+        )
+        return True
+
+    async def async_reject_redemption(self, redemption_id: str) -> bool:
+        """Lehnt eine Einlösungs-Anfrage ab - kein Punktabzug, Status auf 'rejected'."""
+        eintrag = self._finde_redemption(redemption_id)
+        if eintrag is None:
+            _LOGGER.warning("Einlösungs-Anfrage '%s' nicht gefunden.", redemption_id)
+            return False
+        if eintrag["status"] != REDEMPTION_STATUS_PENDING:
+            _LOGGER.warning(
+                "Einlösungs-Anfrage '%s' wartet nicht auf Freigabe (Status: '%s').",
+                redemption_id,
+                eintrag["status"],
+            )
+            return False
+
+        eintrag["status"] = REDEMPTION_STATUS_REJECTED
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_REWARD_REDEMPTION_REJECTED,
+            {"redemption_id": redemption_id, "user_id": eintrag["user_id"]},
+        )
+        _LOGGER.info(
+            "Einlösung von '%s' durch Benutzer '%s' wurde abgelehnt.",
+            eintrag["reward_name"],
+            eintrag["user_id"],
+        )
+        return True
+
+    def _finde_redemption(self, redemption_id: str) -> dict[str, Any] | None:
+        return next(
+            (r for r in self._data["redemptions"] if r["redemption_id"] == redemption_id), None
+        )
+
+    # ------------------------------------------------------------------
+    # Internet-Zeit-Prämien: automatische Abschaltung nach Ablauf der
+    # Dauer, inkl. Nachhol-Logik bei einem Home-Assistant-Neustart.
+    # ------------------------------------------------------------------
+
+    def async_setup_reward_timers(self) -> None:
+        """
+        Wird einmal beim Start der Integration aufgerufen: prüft alle
+        freigegebenen "internet_time"-Einlösungen, die noch nicht
+        abgeschaltet wurden. Ist die geplante Abschaltzeit bereits
+        verstrichen (z. B. weil Home Assistant währenddessen neu
+        gestartet wurde), wird sofort abgeschaltet ("Nachholen"). Liegt
+        sie noch in der Zukunft, wird ein neuer Timer mit der
+        verbleibenden Restzeit gesetzt.
+        """
+        jetzt = dt_util.now()
+        for eintrag in self._data["redemptions"]:
+            if (
+                eintrag["reward_type"] != REWARD_TYPE_INTERNET_TIME
+                or eintrag["status"] != REDEMPTION_STATUS_APPROVED
+                or eintrag.get("deactivated")
+                or not eintrag.get("deactivate_at")
+            ):
+                continue
+
+            abschaltzeitpunkt = dt_util.parse_datetime(eintrag["deactivate_at"])
+            if abschaltzeitpunkt is None:
+                continue
+
+            if abschaltzeitpunkt <= jetzt:
+                _LOGGER.info(
+                    "Internet-Zeit-Prämie '%s' (Benutzer '%s') ist während eines Neustarts "
+                    "abgelaufen - wird jetzt nachträglich abgeschaltet.",
+                    eintrag["reward_name"],
+                    eintrag["user_id"],
+                )
+                self.hass.async_create_task(self._async_switch_abschalten(eintrag))
+            else:
+                self._plane_abschaltung(eintrag)
+
+    def _plane_abschaltung(self, eintrag: dict[str, Any]) -> None:
+        """Setzt einen Timer, der die switch-Entität zum geplanten Zeitpunkt abschaltet."""
+        abschaltzeitpunkt = dt_util.parse_datetime(eintrag["deactivate_at"])
+        if abschaltzeitpunkt is None:
+            return
+        verbleibende_sekunden = max(0, (abschaltzeitpunkt - dt_util.now()).total_seconds())
+
+        async def _abschalten(_now: Any = None) -> None:
+            await self._async_switch_abschalten(eintrag)
+
+        self._reward_timer_unsub[eintrag["redemption_id"]] = async_call_later(
+            self.hass, verbleibende_sekunden, _abschalten
+        )
+
+    async def _async_switch_abschalten(self, eintrag: dict[str, Any]) -> None:
+        """Schaltet die switch-Entität einer Internet-Zeit-Prämie ab und markiert den Eintrag als erledigt."""
+        await self.hass.services.async_call(
+            "homeassistant", "turn_off", {"entity_id": eintrag["switch_entity_id"]}, blocking=False
+        )
+        eintrag["deactivated"] = True
+        self._reward_timer_unsub.pop(eintrag["redemption_id"], None)
+        await self._async_persist()
+        _LOGGER.info(
+            "Internet-Zeit-Prämie '%s' (Benutzer '%s') wurde abgeschaltet.",
+            eintrag["reward_name"],
+            eintrag["user_id"],
         )
 
     # ------------------------------------------------------------------
@@ -1015,13 +1474,16 @@ class AufgabenScoreboardManager:
         return False
 
     def async_unload(self) -> None:
-        """Meldet alle Entitäts- und Zeitplan-Trigger-Listener ab (beim Entladen/Neuladen der Integration)."""
+        """Meldet alle Entitäts-, Zeitplan- und Prämien-Timer-Listener ab (beim Entladen/Neuladen der Integration)."""
         for abmelden in self._trigger_unsub.values():
             abmelden()
         self._trigger_unsub.clear()
         if self._schedule_unsub is not None:
             self._schedule_unsub()
             self._schedule_unsub = None
+        for abmelden in self._reward_timer_unsub.values():
+            abmelden()
+        self._reward_timer_unsub.clear()
 
     # ------------------------------------------------------------------
     # Lesezugriffe (werden u. a. von den Sensor-Entitäten verwendet)
