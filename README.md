@@ -207,7 +207,10 @@ Geräte & Dienste → Aufgaben-Punktesystem → Konfigurieren**. Nach
 Aktivierung bekommt jeder Benutzer ein **Punktekonto** (💰-Badge in der
 Rangliste), das bei jeder Siegerehrung um seinen jeweiligen Punktestand
 wächst – ein laufendes Guthaben über beliebig viele Runden hinweg, kein
-Rundenlimit.
+Rundenlimit. Ein Klick auf den 💰-Badge klappt einen **eigenständigen
+Punktekonto-Verlauf** auf (getrennt vom Aufgaben-Verlauf, der über den
+Namen aufklappbar ist) – zeigt Zugänge aus Siegerehrungen und Abgänge
+aus genehmigten Prämien-Einlösungen chronologisch.
 
 Administratoren legen im Bereich „Prämien verwalten" Prämien mit einem
 Punktepreis an:
