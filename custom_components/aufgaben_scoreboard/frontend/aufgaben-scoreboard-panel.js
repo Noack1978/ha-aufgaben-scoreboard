@@ -440,7 +440,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
           ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
         </div>
 
-        ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId)}
+        ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor)}
 
         ${istAdmin ? this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
@@ -631,13 +631,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * Sensor überhaupt ein "punktekonto"-Attribut besitzt - fehlt es,
    * ist das Feature serverseitig deaktiviert, siehe sensor.py).
    */
-  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId) {
+  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor) {
     const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
     if (!eigener || eigener.zustand.attributes.punktekonto === undefined) {
       return "";
     }
     const guthaben = eigener.zustand.attributes.punktekonto;
-    const praemien = this._alleVorlagenSensorAttribute(benutzerSensoren, "praemien");
+    const praemien = uebersichtsSensor ? uebersichtsSensor.attributes.praemien || [] : [];
 
     return `
       <div class="abschnitt">
@@ -674,16 +674,6 @@ class AufgabenScoreboardPanel extends HTMLElement {
         }
       </div>
     `;
-  }
-
-  /** Kleiner Helfer: liest ein Listen-Attribut vom ersten Benutzer-Sensor, der es besitzt (alle teilen sich dieselben globalen Listen). */
-  _alleVorlagenSensorAttribute(benutzerSensoren, attributName) {
-    for (const b of benutzerSensoren) {
-      if (Array.isArray(b.zustand.attributes[attributName])) {
-        return b.zustand.attributes[attributName];
-      }
-    }
-    return [];
   }
 
   /** Admin-Bereich "Wartet auf Freigabe (Prämien)": angefragte Einlösungen, die noch bestätigt werden müssen. */
