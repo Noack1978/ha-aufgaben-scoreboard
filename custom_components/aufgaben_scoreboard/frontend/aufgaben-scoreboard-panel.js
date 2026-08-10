@@ -51,6 +51,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Analog zum Vorlagen-Formular, aber für die Prämien-Verwaltung.
     this._praemienFormularOffen = false;
     this._bearbeitePraemieId = null;
+    // Aktiver Tab der Panel-Navigation. "benutzer" ist für ALLE
+    // Benutzer sichtbar, die übrigen Tabs nur für Administratoren
+    // (siehe _render() - fällt automatisch auf "benutzer" zurück,
+    // falls der aktive Tab für die aktuellen Rechte nicht existiert).
+    this._aktiverTab = "benutzer";
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -375,6 +380,25 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const uebersichtsSensor = this._findeUebersichtsSensor();
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
 
+    // Tab-Definitionen: "benutzer" ist für ALLE sichtbar, alle
+    // anderen nur für Administratoren.
+    const tabs = istAdmin
+      ? [
+          { id: "benutzer", label: "👤 Benutzer" },
+          { id: "freigaben", label: "⏳ Freigaben" },
+          { id: "verwaltung", label: "📋 Verwaltung" },
+          { id: "vorlagen", label: "🔁 Standardaufgaben" },
+          { id: "praemien", label: "🎁 Prämien" },
+        ]
+      : [{ id: "benutzer", label: "👤 Benutzer" }];
+
+    // Falls der zuletzt aktive Tab für die aktuellen Rechte nicht (mehr)
+    // existiert (z. B. Admin-Rechte entzogen), sicher auf "benutzer"
+    // zurückfallen statt eine leere Seite zu zeigen.
+    if (!tabs.some((t) => t.id === this._aktiverTab)) {
+      this._aktiverTab = "benutzer";
+    }
+
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
       <div class="wrapper">
@@ -383,79 +407,109 @@ class AufgabenScoreboardPanel extends HTMLElement {
           <h1>🏆 Aufgaben-Punktesystem</h1>
         </div>
 
-        <div class="abschnitt-kopf-mit-aktion">
-          <h2 class="rangliste-titel">🏆 Rangliste</h2>
-          ${
-            istAdmin
-              ? `<button class="btn-primary siegerehrung-btn" title="Ermittelt den/die Gewinner, erhöht deren Sieg-Zähler und setzt alle Punktestände zurück">Siegerehrung durchführen</button>`
-              : ""
-          }
-        </div>
+        ${
+          tabs.length > 1
+            ? `
+          <div class="tab-leiste">
+            ${tabs
+              .map(
+                (t) => `
+              <button
+                class="tab-btn ${this._aktiverTab === t.id ? "tab-btn-aktiv" : ""}"
+                data-tab-id="${t.id}"
+              >${t.label}</button>`
+              )
+              .join("")}
+          </div>
+        `
+            : ""
+        }
 
-        <div class="rangliste">
-          ${benutzerSensoren
-            .slice()
-            .sort((a, b) => Number(b.zustand.state) - Number(a.zustand.state))
-            .map((b) => {
-              const userId = b.zustand.attributes.user_id;
-              const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
-              const kontoAufgeklappt = this._aufgeklappterPunktekontoUserId === userId;
-              const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
-              const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
-              const siege = b.zustand.attributes.siege || 0;
-              const punktekonto = b.zustand.attributes.punktekonto;
-              return `
-              <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
-                <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
-                  ${this._escape(b.zustand.attributes.friendly_name || b.entityId)}
-                  <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
-                </span>
-                <div class="rang-rechts">
-                  ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
-                  ${
-                    punktekonto !== undefined
-                      ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
-                          💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
-                        </span>`
-                      : ""
-                  }
-                  <span class="rang-punkte">${b.zustand.state} Pkt.</span>
-                  ${
-                    istAdmin
-                      ? `<button
-                          class="btn-secondary reset-punkte-btn"
-                          data-user-id="${userId}"
-                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                          title="Punktestand zurücksetzen"
-                        >Zurücksetzen</button>
-                        <button
-                          class="btn-secondary reset-siege-btn"
-                          data-user-id="${userId}"
-                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                          title="Sieg-Zähler zurücksetzen"
-                        >Siege zurücksetzen</button>`
-                      : ""
-                  }
+        ${
+          this._aktiverTab === "benutzer"
+            ? `
+          <div class="abschnitt-kopf-mit-aktion">
+            <h2 class="rangliste-titel">🏆 Rangliste</h2>
+            ${
+              istAdmin
+                ? `<button class="btn-primary siegerehrung-btn" title="Ermittelt den/die Gewinner, erhöht deren Sieg-Zähler und setzt alle Punktestände zurück">Siegerehrung durchführen</button>`
+                : ""
+            }
+          </div>
+
+          <div class="rangliste">
+            ${benutzerSensoren
+              .slice()
+              .sort((a, b) => Number(b.zustand.state) - Number(a.zustand.state))
+              .map((b) => {
+                const userId = b.zustand.attributes.user_id;
+                const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
+                const kontoAufgeklappt = this._aufgeklappterPunktekontoUserId === userId;
+                const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
+                const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
+                const siege = b.zustand.attributes.siege || 0;
+                const punktekonto = b.zustand.attributes.punktekonto;
+                return `
+                <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
+                  <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
+                    ${this._escape(b.zustand.attributes.friendly_name || b.entityId)}
+                    <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
+                  </span>
+                  <div class="rang-rechts">
+                    ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
+                    ${
+                      punktekonto !== undefined
+                        ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
+                            💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
+                          </span>`
+                        : ""
+                    }
+                    <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                    ${
+                      istAdmin
+                        ? `<button
+                            class="btn-secondary reset-punkte-btn"
+                            data-user-id="${userId}"
+                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                            title="Punktestand zurücksetzen"
+                          >Zurücksetzen</button>
+                          <button
+                            class="btn-secondary reset-siege-btn"
+                            data-user-id="${userId}"
+                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                            title="Sieg-Zähler zurücksetzen"
+                          >Siege zurücksetzen</button>`
+                        : ""
+                    }
+                  </div>
                 </div>
-              </div>
-              ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
-              ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}`;
-            })
-            .join("")}
-        </div>
+                ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
+                ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}`;
+              })
+              .join("")}
+          </div>
 
-        <div class="abschnitt">
-          <h2>Meine offenen Aufgaben</h2>
-          ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
-        </div>
+          <div class="abschnitt">
+            <h2>Meine offenen Aufgaben</h2>
+            ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
+          </div>
 
-        ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor)}
+          ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor)}
+        `
+            : ""
+        }
 
-        ${istAdmin ? this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin ? this._renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${
+          istAdmin && this._aktiverTab === "freigaben"
+            ? `
+          ${this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren)}
+          ${this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren)}
+        `
+            : ""
+        }
+        ${istAdmin && this._aktiverTab === "verwaltung" ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "vorlagen" ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "praemien" ? this._renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
     `;
 
@@ -1404,6 +1458,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     }
 
+    this.shadowRoot.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._aktiverTab = ev.target.getAttribute("data-tab-id");
+        this._render();
+      });
+    });
+
     this.shadowRoot.querySelectorAll(".eigene-erledigen").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         this._aufgabeErledigen(ev.target.getAttribute("data-task-id"), eigeneUserId);
@@ -1896,6 +1957,33 @@ class AufgabenScoreboardPanel extends HTMLElement {
       }
       .menu-btn:hover {
         opacity: 1;
+      }
+      .tab-leiste {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 8px;
+        margin-bottom: 24px;
+        border-bottom: 1px solid var(--divider-color, #eee);
+      }
+      .tab-btn {
+        flex-shrink: 0;
+        background: none;
+        border: none;
+        border-bottom: 3px solid transparent;
+        border-radius: 0;
+        padding: 8px 12px;
+        font-size: 0.95em;
+        font-weight: 500;
+        color: var(--secondary-text-color);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .tab-btn-aktiv {
+        color: var(--primary-color);
+        border-bottom-color: var(--primary-color);
+        font-weight: 700;
       }
       h2 {
         font-size: 1.15em;
