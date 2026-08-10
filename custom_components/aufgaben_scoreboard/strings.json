@@ -13,10 +13,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Berücksichtigte Benutzer",
-        "description": "Wähle aus, welche Home-Assistant-Benutzer von dieser Integration berücksichtigt werden sollen. Nur ausgewählte Benutzer bekommen einen eigenen Punkte-Sensor und stehen beim Anlegen/Bearbeiten von Aufgaben als zuständige Person zur Auswahl. So lassen sich z. B. technische Benutzer/Integrations-Accounts ausblenden.",
+        "title": "Berücksichtigte Benutzer & Prämien-System",
+        "description": "Wähle aus, welche Home-Assistant-Benutzer von dieser Integration berücksichtigt werden sollen. Nur ausgewählte Benutzer bekommen einen eigenen Punkte-Sensor und stehen beim Anlegen/Bearbeiten von Aufgaben als zuständige Person zur Auswahl. So lassen sich z. B. technische Benutzer/Integrations-Accounts ausblenden. Zusätzlich lässt sich hier das optionale Prämien-System (Punktekonto + einlösbare Prämien) aktivieren.",
         "data": {
-          "enabled_users": "Berücksichtigte Benutzer"
+          "enabled_users": "Berücksichtigte Benutzer",
+          "rewards_enabled": "Prämien-System aktivieren"
         }
       }
     }

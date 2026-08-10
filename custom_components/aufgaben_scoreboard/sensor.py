@@ -33,6 +33,7 @@ from .const import (
     ALL_TASKS_SENSOR_UNIQUE_ID,
     DOMAIN,
     OPTION_ENABLED_USERS,
+    OPTION_REWARDS_ENABLED,
     SIGNAL_UPDATE,
     USER_SENSOR_UNIQUE_ID_PREFIX,
 )
@@ -49,7 +50,12 @@ async def async_setup_entry(
     """Richtet die Sensor-Entitäten beim Laden der Integration ein."""
     manager: AufgabenScoreboardManager = hass.data[DOMAIN][entry.entry_id]
 
-    entitaeten: list[SensorEntity] = [AlleOffenenAufgabenSensor(manager, entry)]
+    # Prämien-System ist standardmäßig deaktiviert - nur wenn im
+    # Options-Flow explizit aktiviert, bekommen die Sensoren die
+    # entsprechenden Attribute (Punktekonto, wartende Einlösungen, ...).
+    praemien_aktiviert = entry.options.get(OPTION_REWARDS_ENABLED, False)
+
+    entitaeten: list[SensorEntity] = [AlleOffenenAufgabenSensor(manager, entry, praemien_aktiviert)]
 
     # Welche Benutzer berücksichtigt werden, kann über den Options-Flow
     # ("Konfigurieren" bei der Integration) eingeschränkt werden - z. B.
@@ -69,7 +75,9 @@ async def async_setup_entry(
             continue
         if erlaubte_benutzer_ids is not None and benutzer.id not in erlaubte_benutzer_ids:
             continue
-        entitaeten.append(BenutzerPunkteSensor(manager, entry, benutzer.id, benutzer.name or benutzer.id))
+        entitaeten.append(
+            BenutzerPunkteSensor(manager, entry, benutzer.id, benutzer.name or benutzer.id, praemien_aktiviert)
+        )
 
     async_add_entities(entitaeten)
 
@@ -134,8 +142,13 @@ class BenutzerPunkteSensor(_BasisSensor):
         - erledigte_aufgaben: Die letzten erledigten (freigegebenen)
           Aufgaben dieses Benutzers (neueste zuerst), jeweils mit einem
           "ruecknehmbar"-Flag für die Rücknahme-Funktion.
-        - user_id: Die interne Home-Assistant-Benutzer-ID (wird von der
-          Custom Card benötigt, um Service-Aufrufe korrekt zuzuordnen).
+        - siege: Anzahl gewonnener Siegerehrungen (dauerhaft, übersteht
+          normale Punktestand-Resets - siehe async_perform_awards()).
+        - punktekonto / wartende_praemien_eigene: NUR vorhanden, wenn das
+          Prämien-System aktiviert ist (siehe Options-Flow).
+        - user_id: Die interne Home-Assistant-Benutzer-ID (wird vom
+          Sidebar-Panel benötigt, um Sensoren Benutzern zuzuordnen und
+          Service-Aufrufe korrekt zu adressieren).
     """
 
     _attr_icon = "mdi:star-check-outline"
@@ -148,9 +161,11 @@ class BenutzerPunkteSensor(_BasisSensor):
         entry: ConfigEntry,
         user_id: str,
         anzeigename: str,
+        praemien_aktiviert: bool = False,
     ) -> None:
         super().__init__(manager, entry)
         self._user_id = user_id
+        self._praemien_aktiviert = praemien_aktiviert
         self._attr_unique_id = f"{USER_SENSOR_UNIQUE_ID_PREFIX}{user_id}"
         self._attr_name = f"Punkte {anzeigename}"
 
@@ -160,12 +175,17 @@ class BenutzerPunkteSensor(_BasisSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {
+        attribute = {
             "user_id": self._user_id,
             "offene_aufgaben": self._manager.get_open_tasks_for_user(self._user_id),
             "wartende_aufgaben": self._manager.get_pending_tasks_for_user(self._user_id),
             "erledigte_aufgaben": self._manager.get_completed_tasks_for_user(self._user_id),
+            "siege": self._manager.get_wins(self._user_id),
         }
+        if self._praemien_aktiviert:
+            attribute["punktekonto"] = self._manager.get_points_account(self._user_id)
+            attribute["eigene_praemien_verlauf"] = self._manager.get_redemptions_for_user(self._user_id)
+        return attribute
 
 
 class AlleOffenenAufgabenSensor(_BasisSensor):
@@ -179,9 +199,10 @@ class AlleOffenenAufgabenSensor(_BasisSensor):
     _attr_name = "Offene Aufgaben (Alle Benutzer)"
     _attr_native_unit_of_measurement = "Aufgaben"
 
-    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry, praemien_aktiviert: bool = False) -> None:
         super().__init__(manager, entry)
         self._attr_unique_id = ALL_TASKS_SENSOR_UNIQUE_ID
+        self._praemien_aktiviert = praemien_aktiviert
 
     @property
     def native_value(self) -> int:
@@ -189,9 +210,13 @@ class AlleOffenenAufgabenSensor(_BasisSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {
+        attribute = {
             "offene_aufgaben": self._manager.get_all_open_tasks(),
             "wartende_aufgaben": self._manager.get_all_pending_tasks(),
             "alle_aufgaben": self._manager.get_all_tasks(),
             "vorlagen": self._manager.get_all_templates(),
         }
+        if self._praemien_aktiviert:
+            attribute["praemien"] = self._manager.get_all_rewards()
+            attribute["wartende_praemien"] = self._manager.get_pending_redemptions()
+        return attribute

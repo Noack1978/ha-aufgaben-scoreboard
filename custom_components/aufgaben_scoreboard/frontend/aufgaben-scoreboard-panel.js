@@ -44,6 +44,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Erledigungs-Verlauf in der Rangliste gerade aufgeklappt ist -
     // null = keiner. Immer nur einer gleichzeitig aufgeklappt.
     this._aufgeklappterVerlaufUserId = null;
+    // Analog zum Vorlagen-Formular, aber für die Prämien-Verwaltung.
+    this._praemienFormularOffen = false;
+    this._bearbeitePraemieId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -172,6 +175,44 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
   _erledigungRueckgaengig(completionId) {
     this._hass.callService("aufgaben_scoreboard", "undo_completion", { completion_id: completionId });
+  }
+
+  _siegerehrungDurchfuehren() {
+    this._hass.callService("aufgaben_scoreboard", "perform_awards", {});
+  }
+
+  _siegeZuruecksetzen(userId) {
+    this._hass.callService("aufgaben_scoreboard", "reset_wins", { user_id: userId });
+  }
+
+  _praemieAnlegen(formData) {
+    this._hass.callService("aufgaben_scoreboard", "add_reward", formData);
+  }
+
+  _praemieAktualisieren(rewardId, formData) {
+    this._hass.callService("aufgaben_scoreboard", "update_reward", {
+      reward_id: rewardId,
+      ...formData,
+    });
+  }
+
+  _praemieLoeschen(rewardId) {
+    this._hass.callService("aufgaben_scoreboard", "remove_reward", { reward_id: rewardId });
+  }
+
+  _praemieAnfragen(rewardId, userId) {
+    this._hass.callService("aufgaben_scoreboard", "request_redemption", {
+      reward_id: rewardId,
+      user_id: userId,
+    });
+  }
+
+  _einloesungFreigeben(redemptionId) {
+    this._hass.callService("aufgaben_scoreboard", "approve_redemption", { redemption_id: redemptionId });
+  }
+
+  _einloesungAblehnen(redemptionId) {
+    this._hass.callService("aufgaben_scoreboard", "reject_redemption", { redemption_id: redemptionId });
   }
 
   _aufgabeLoeschen(taskId) {
@@ -338,6 +379,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
           <h1>🏆 Aufgaben-Punktesystem</h1>
         </div>
 
+        <div class="abschnitt-kopf-mit-aktion">
+          <h2 class="rangliste-titel">🏆 Rangliste</h2>
+          ${
+            istAdmin
+              ? `<button class="btn-primary siegerehrung-btn" title="Ermittelt den/die Gewinner, erhöht deren Sieg-Zähler und setzt alle Punktestände zurück">Siegerehrung durchführen</button>`
+              : ""
+          }
+        </div>
+
         <div class="rangliste">
           ${benutzerSensoren
             .slice()
@@ -346,6 +396,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
               const userId = b.zustand.attributes.user_id;
               const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
               const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
+              const siege = b.zustand.attributes.siege || 0;
+              const punktekonto = b.zustand.attributes.punktekonto;
               return `
               <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
                 <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
@@ -353,6 +405,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
                   <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
                 </span>
                 <div class="rang-rechts">
+                  ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
+                  ${
+                    punktekonto !== undefined
+                      ? `<span class="konto-badge" title="Prämien-Guthaben">💰 ${punktekonto}</span>`
+                      : ""
+                  }
                   <span class="rang-punkte">${b.zustand.state} Pkt.</span>
                   ${
                     istAdmin
@@ -361,7 +419,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
                           data-user-id="${userId}"
                           data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
                           title="Punktestand zurücksetzen"
-                        >Zurücksetzen</button>`
+                        >Zurücksetzen</button>
+                        <button
+                          class="btn-secondary reset-siege-btn"
+                          data-user-id="${userId}"
+                          data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                          title="Sieg-Zähler zurücksetzen"
+                        >Siege zurücksetzen</button>`
                       : ""
                   }
                 </div>
@@ -376,9 +440,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
           ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
         </div>
 
+        ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId)}
+
         ${istAdmin ? this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin ? this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
         ${istAdmin ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin ? this._renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) : ""}
       </div>
     `;
 
@@ -552,6 +620,237 @@ class AufgabenScoreboardPanel extends HTMLElement {
           </div>
         `
         }
+      </div>
+    `;
+  }
+
+  /**
+   * Persönlicher Bereich "Mein Punktekonto": Guthaben + verfügbare
+   * Prämien mit Einlösen-Button. Wird nur angezeigt, wenn das
+   * Prämien-System aktiviert ist (erkennbar daran, dass der eigene
+   * Sensor überhaupt ein "punktekonto"-Attribut besitzt - fehlt es,
+   * ist das Feature serverseitig deaktiviert, siehe sensor.py).
+   */
+  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId) {
+    const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
+    if (!eigener || eigener.zustand.attributes.punktekonto === undefined) {
+      return "";
+    }
+    const guthaben = eigener.zustand.attributes.punktekonto;
+    const praemien = this._alleVorlagenSensorAttribute(benutzerSensoren, "praemien");
+
+    return `
+      <div class="abschnitt">
+        <h2>💰 Mein Punktekonto: ${guthaben} Punkte</h2>
+        ${
+          praemien.length === 0
+            ? `<div class="hinweis">Noch keine Prämien verfügbar.</div>`
+            : `
+          <div class="aufgaben-liste">
+            ${praemien
+              .map((p) => {
+                const leistbar = guthaben >= p.cost;
+                return `
+              <div class="aufgaben-karte ${leistbar ? "" : "wartend"}">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(p.name)}</div>
+                  ${p.description ? `<div class="aufgaben-beschreibung">${this._escape(p.description)}</div>` : ""}
+                  ${p.reward_type === "internet_time" ? `<div class="aufgaben-beschreibung">⏱️ ${p.duration_minutes} Minuten Internet-Zeit</div>` : ""}
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">${p.cost} Pkt.</span>
+                  <button
+                    class="btn-primary praemie-einloesen-btn"
+                    data-reward-id="${p.id}"
+                    data-reward-name="${this._escape(p.name)}"
+                    ${leistbar ? "" : "disabled"}
+                  >Einlösen</button>
+                </div>
+              </div>`;
+              })
+              .join("")}
+          </div>
+        `
+        }
+      </div>
+    `;
+  }
+
+  /** Kleiner Helfer: liest ein Listen-Attribut vom ersten Benutzer-Sensor, der es besitzt (alle teilen sich dieselben globalen Listen). */
+  _alleVorlagenSensorAttribute(benutzerSensoren, attributName) {
+    for (const b of benutzerSensoren) {
+      if (Array.isArray(b.zustand.attributes[attributName])) {
+        return b.zustand.attributes[attributName];
+      }
+    }
+    return [];
+  }
+
+  /** Admin-Bereich "Wartet auf Freigabe (Prämien)": angefragte Einlösungen, die noch bestätigt werden müssen. */
+  _renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren) {
+    if (!uebersichtsSensor || uebersichtsSensor.attributes.praemien === undefined) {
+      return "";
+    }
+    const wartende = uebersichtsSensor.attributes.wartende_praemien || [];
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <h2>🎁 Prämien-Einlösungen zur Freigabe${wartende.length > 0 ? ` (${wartende.length})` : ""}</h2>
+        ${
+          wartende.length === 0
+            ? `<div class="hinweis">Aktuell nichts zu prüfen.</div>`
+            : `
+          <div class="aufgaben-liste">
+            ${wartende
+              .map(
+                (r) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(r.reward_name)}</div>
+                  <div class="aufgaben-zuweisung">
+                    Angefragt von: ${this._nameFuerUserId(r.user_id, benutzerSensoren)}
+                    · ${this._formatiereDatum(r.requested_at)}
+                  </div>
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">${r.cost} Pkt.</span>
+                  <button class="btn-primary freigeben-praemie-btn" data-redemption-id="${r.redemption_id}">Freigeben</button>
+                  <button class="btn-danger ablehnen-praemie-btn" data-redemption-id="${r.redemption_id}">Ablehnen</button>
+                </div>
+              </div>`
+              )
+              .join("")}
+          </div>
+        `
+        }
+      </div>
+    `;
+  }
+
+  /** Admin-Bereich "Prämien verwalten": Liste + Formular zum Anlegen/Bearbeiten von Prämien. */
+  _renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) {
+    if (!uebersichtsSensor || uebersichtsSensor.attributes.praemien === undefined) {
+      return "";
+    }
+    const praemien = uebersichtsSensor.attributes.praemien || [];
+
+    const bearbeitetePraemie = this._bearbeitePraemieId
+      ? praemien.find((p) => p.id === this._bearbeitePraemieId)
+      : null;
+    if (this._bearbeitePraemieId && !bearbeitetePraemie) {
+      this._bearbeitePraemieId = null;
+    }
+
+    const formularId = bearbeitetePraemie ? "praemie-bearbeiten-formular" : "neue-praemie-formular";
+    const formularTitel = bearbeitetePraemie ? "Prämie bearbeiten" : "Neue Prämie anlegen";
+    const buttonBeschriftung = bearbeitetePraemie ? "Änderungen speichern" : "Prämie anlegen";
+    const typWert = bearbeitetePraemie ? bearbeitetePraemie.reward_type : "generic";
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <div class="admin-kopf">
+          <h2>🎁 Prämien verwalten</h2>
+          <button class="btn-secondary" id="toggle-praemien-formular">
+            ${this._praemienFormularOffen ? "Formular schließen" : "+ Neue Prämie"}
+          </button>
+        </div>
+
+        ${
+          this._praemienFormularOffen
+            ? `
+          <form class="neue-aufgabe-formular formular-mit-zustand" id="${formularId}">
+            <h3 class="formular-titel">${formularTitel}</h3>
+            <label>
+              Titel
+              <input
+                type="text"
+                name="name"
+                required
+                placeholder="z. B. Kinobesuch"
+                value="${bearbeitetePraemie ? this._escape(bearbeitetePraemie.name) : ""}"
+              />
+            </label>
+            <label>
+              Beschreibung (optional)
+              <textarea name="description" placeholder="Details zur Prämie">${
+                bearbeitetePraemie ? this._escape(bearbeitetePraemie.description || "") : ""
+              }</textarea>
+            </label>
+            <label>
+              Preis (Punkte)
+              <input
+                type="number"
+                name="cost"
+                min="0"
+                required
+                value="${bearbeitetePraemie ? bearbeitetePraemie.cost : 10}"
+              />
+            </label>
+            <label>
+              Typ
+              <select name="reward_type" id="praemie-typ-auswahl">
+                <option value="generic" ${typWert === "generic" ? "selected" : ""}>Generisch (nur Protokollierung)</option>
+                <option value="internet_time" ${typWert === "internet_time" ? "selected" : ""}>Internet-Zeit (schaltet eine Entität)</option>
+              </select>
+            </label>
+            <div class="internet-zeit-felder" style="${typWert === "internet_time" ? "" : "display:none;"}">
+              <label>
+                Zu schaltende Entität (switch)
+                <input
+                  type="text"
+                  name="switch_entity_id"
+                  placeholder="z. B. switch.kind_wlan"
+                  value="${bearbeitetePraemie ? this._escape(bearbeitetePraemie.switch_entity_id || "") : ""}"
+                />
+              </label>
+              <label>
+                Dauer (Minuten)
+                <input
+                  type="number"
+                  name="duration_minutes"
+                  min="1"
+                  value="${bearbeitetePraemie && bearbeitetePraemie.duration_minutes ? bearbeitetePraemie.duration_minutes : 30}"
+                />
+              </label>
+            </div>
+            <div class="formular-aktionen">
+              <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
+              ${
+                bearbeitetePraemie
+                  ? `<button type="button" class="btn-secondary" id="praemie-bearbeiten-abbrechen">Abbrechen</button>`
+                  : ""
+              }
+            </div>
+          </form>
+        `
+            : ""
+        }
+
+        <div class="aufgaben-liste">
+          ${
+            praemien.length === 0
+              ? `<div class="hinweis">Noch keine Prämien angelegt.</div>`
+              : praemien
+                  .map(
+                    (p) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${this._escape(p.name)}</div>
+                  ${p.description ? `<div class="aufgaben-beschreibung">${this._escape(p.description)}</div>` : ""}
+                  <div class="vorlage-badges">
+                    <span class="vorlage-badge">${p.reward_type === "internet_time" ? "⏱️ Internet-Zeit" : "🎫 Generisch"}</span>
+                  </div>
+                </div>
+                <div class="aufgaben-aktion">
+                  <span class="punkte-badge">${p.cost} Pkt.</span>
+                  <button class="btn-secondary praemie-bearbeiten-btn" data-reward-id="${p.id}">Bearbeiten</button>
+                  <button class="btn-danger praemie-loeschen-btn" data-reward-id="${p.id}">Löschen</button>
+                </div>
+              </div>`
+                  )
+                  .join("")
+          }
+        </div>
       </div>
     `;
   }
@@ -1086,13 +1385,22 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".praemie-einloesen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const rewardName = ev.target.getAttribute("data-reward-name");
+        if (confirm(`"${rewardName}" wirklich anfragen? Ein Administrator muss die Einlösung noch bestätigen.`)) {
+          this._praemieAnfragen(ev.target.getAttribute("data-reward-id"), eigeneUserId);
+        }
+      });
+    });
+
     if (!istAdmin) return;
 
     this.shadowRoot.querySelectorAll(".reset-punkte-btn").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         const userId = ev.target.getAttribute("data-user-id");
         const userName = ev.target.getAttribute("data-user-name");
-        if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen?`)) {
+        if (confirm(`Punktestand von "${userName}" wirklich auf 0 zurücksetzen? Der Erledigungs-Verlauf wird dabei ebenfalls gelöscht.`)) {
           this._punktestandZuruecksetzen(userId);
         }
       });
@@ -1121,16 +1429,78 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    const siegerehrungBtn = this.shadowRoot.querySelector(".siegerehrung-btn");
+    if (siegerehrungBtn) {
+      siegerehrungBtn.addEventListener("click", () => {
+        // Aktuellen Höchststand direkt aus den bereits vorhandenen
+        // Sensor-Daten ermitteln, um den/die Gewinner VOR der
+        // Bestätigung anzuzeigen (kein zusätzlicher Service-Aufruf nötig).
+        let hoechststand = 0;
+        const fuehrende = [];
+        benutzerSensoren.forEach((b) => {
+          const punkte = Number(b.zustand.state) || 0;
+          if (punkte > hoechststand) {
+            hoechststand = punkte;
+            fuehrende.length = 0;
+            fuehrende.push(b);
+          } else if (punkte === hoechststand && punkte > 0) {
+            fuehrende.push(b);
+          }
+        });
+        const namen = fuehrende
+          .map((b) => this._escape(b.zustand.attributes.friendly_name || b.entityId))
+          .join(", ");
+        const hinweis =
+          fuehrende.length > 0
+            ? `Aktueller Stand: ${namen} mit ${hoechststand} Punkten.\n\n`
+            : "Aktuell haben alle 0 Punkte - niemand würde gewinnen.\n\n";
+        if (
+          confirm(
+            `${hinweis}Siegerehrung wirklich durchführen? Der/die Gewinner bekommen +1 Sieg, danach werden ALLE Punktestände auf 0 zurückgesetzt.`
+          )
+        ) {
+          this._siegerehrungDurchfuehren();
+        }
+      });
+    }
+
+    this.shadowRoot.querySelectorAll(".reset-siege-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const userId = ev.target.getAttribute("data-user-id");
+        const userName = ev.target.getAttribute("data-user-name");
+        if (confirm(`Sieg-Zähler von "${userName}" wirklich auf 0 zurücksetzen?`)) {
+          this._siegeZuruecksetzen(userId);
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".freigeben-praemie-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._einloesungFreigeben(ev.target.getAttribute("data-redemption-id"));
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".ablehnen-praemie-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diese Einlösung wirklich ablehnen?")) {
+          this._einloesungAblehnen(ev.target.getAttribute("data-redemption-id"));
+        }
+      });
+    });
+
     const toggleBtn = this.shadowRoot.getElementById("toggle-formular");
     if (toggleBtn) {
       toggleBtn.addEventListener("click", () => {
         this._formularOffen = !this._formularOffen;
         // Der Umschalt-Button öffnet immer eine LEERE "Neue Aufgabe" -
         // ein evtl. aktiver Bearbeitungs-Modus wird dabei verlassen.
-        // Aufgaben- und Vorlagen-Formular schließen sich gegenseitig aus.
+        // Aufgaben-, Vorlagen- und Prämien-Formular schließen sich
+        // gegenseitig aus.
         this._bearbeiteTaskId = null;
         this._vorlagenFormularOffen = false;
         this._bearbeiteVorlageId = null;
+        this._praemienFormularOffen = false;
+        this._bearbeitePraemieId = null;
         this._render();
       });
     }
@@ -1142,13 +1512,69 @@ class AufgabenScoreboardPanel extends HTMLElement {
         this._bearbeiteVorlageId = null;
         this._formularOffen = false;
         this._bearbeiteTaskId = null;
+        this._praemienFormularOffen = false;
+        this._bearbeitePraemieId = null;
         this._render();
+      });
+    }
+
+    const togglePraemienBtn = this.shadowRoot.getElementById("toggle-praemien-formular");
+    if (togglePraemienBtn) {
+      togglePraemienBtn.addEventListener("click", () => {
+        this._praemienFormularOffen = !this._praemienFormularOffen;
+        this._bearbeitePraemieId = null;
+        this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
+        this._render();
+      });
+    }
+
+    this.shadowRoot.querySelectorAll(".praemie-bearbeiten-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._bearbeitePraemieId = ev.target.getAttribute("data-reward-id");
+        this._praemienFormularOffen = true;
+        this._formularOffen = false;
+        this._bearbeiteTaskId = null;
+        this._vorlagenFormularOffen = false;
+        this._bearbeiteVorlageId = null;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".praemie-loeschen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diese Prämie wirklich löschen? Bereits erfolgte Einlösungen bleiben in der Historie erhalten.")) {
+          this._praemieLoeschen(ev.target.getAttribute("data-reward-id"));
+        }
+      });
+    });
+
+    const praemieAbbrechenBtn = this.shadowRoot.getElementById("praemie-bearbeiten-abbrechen");
+    if (praemieAbbrechenBtn) {
+      praemieAbbrechenBtn.addEventListener("click", () => {
+        this._praemienFormularOffen = false;
+        this._bearbeitePraemieId = null;
+        this._render();
+      });
+    }
+
+    const praemieTypAuswahl = this.shadowRoot.getElementById("praemie-typ-auswahl");
+    if (praemieTypAuswahl) {
+      praemieTypAuswahl.addEventListener("change", (ev) => {
+        const internetZeitFelder = this.shadowRoot.querySelector(".internet-zeit-felder");
+        if (internetZeitFelder) {
+          internetZeitFelder.style.display = ev.target.value === "internet_time" ? "" : "none";
+        }
       });
     }
 
     const formular = this.shadowRoot.querySelector(".formular-mit-zustand");
     if (formular && (formular.id === "neue-vorlage-formular" || formular.id === "vorlage-bearbeiten-formular")) {
       formular.addEventListener("submit", (ev) => this._vorlagenFormularAbsenden(ev, formular));
+    } else if (formular && (formular.id === "neue-praemie-formular" || formular.id === "praemie-bearbeiten-formular")) {
+      formular.addEventListener("submit", (ev) => this._praemienFormularAbsenden(ev, formular));
     } else if (formular) {
       formular.addEventListener("submit", (ev) => {
         ev.preventDefault();
@@ -1208,6 +1634,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
         this._formularOffen = true;
         this._vorlagenFormularOffen = false;
         this._bearbeiteVorlageId = null;
+        this._praemienFormularOffen = false;
+        this._bearbeitePraemieId = null;
         this._render();
       });
     });
@@ -1218,6 +1646,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
         this._vorlagenFormularOffen = true;
         this._formularOffen = false;
         this._bearbeiteTaskId = null;
+        this._praemienFormularOffen = false;
+        this._bearbeitePraemieId = null;
         this._render();
       });
     });
@@ -1340,6 +1770,49 @@ class AufgabenScoreboardPanel extends HTMLElement {
     this._render();
   }
 
+  /** Verarbeitet das Absenden des Prämien-Formulars (Anlegen ODER Bearbeiten). */
+  _praemienFormularAbsenden(ev, formular) {
+    ev.preventDefault();
+    const daten = new FormData(formular);
+    const rewardType = daten.get("reward_type") || "generic";
+
+    const formData = {
+      name: daten.get("name"),
+      description: daten.get("description") || "",
+      cost: Number(daten.get("cost")),
+      reward_type: rewardType,
+    };
+
+    if (rewardType === "internet_time") {
+      const switchEntityId = daten.get("switch_entity_id") || "";
+      // WICHTIG: Beim Neuanlegen verlangt das Service-Schema entweder
+      // eine gültige Entity-ID oder GAR KEIN Feld (kein leerer String
+      // erlaubt) - beim Bearbeiten ist ein leerer String dagegen
+      // bewusst als "Entität entfernen" zugelassen. Daher hier je nach
+      // Modus unterschiedlich behandeln.
+      if (switchEntityId || this._bearbeitePraemieId) {
+        formData.switch_entity_id = switchEntityId;
+      }
+      formData.duration_minutes = Number(daten.get("duration_minutes")) || 30;
+    }
+    // Beim Wechsel WEG von "internet_time" werden switch_entity_id/
+    // duration_minutes bewusst NICHT mitgesendet (weder Wert noch
+    // "null" - Letzteres würde an der Service-Schema-Validierung
+    // scheitern, vol.Coerce(int) akzeptiert kein None). Sie bleiben im
+    // Backend als ungenutzte Alt-Werte stehen, was unkritisch ist, da
+    // ausschließlich reward_type das tatsächliche Verhalten bestimmt.
+
+    if (this._bearbeitePraemieId) {
+      this._praemieAktualisieren(this._bearbeitePraemieId, formData);
+    } else {
+      this._praemieAnlegen(formData);
+    }
+
+    this._praemienFormularOffen = false;
+    this._bearbeitePraemieId = null;
+    this._render();
+  }
+
   _escape(text) {
     const div = document.createElement("div");
     div.textContent = text == null ? "" : text;
@@ -1413,9 +1886,33 @@ class AufgabenScoreboardPanel extends HTMLElement {
         gap: 10px;
       }
       .rang-punkte { color: var(--primary-color); font-weight: 700; }
-      .reset-punkte-btn {
+      .reset-punkte-btn,
+      .reset-siege-btn {
         font-size: 0.8em;
         padding: 4px 10px;
+      }
+      .sieg-badge,
+      .konto-badge {
+        font-size: 0.85em;
+        white-space: nowrap;
+      }
+      .abschnitt-kopf-mit-aktion {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 32px;
+        margin-bottom: 12px;
+      }
+      .rangliste-titel { margin: 0; }
+      .internet-zeit-felder {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 6px;
+        padding: 10px 12px;
       }
       .rang-name-klickbar {
         cursor: pointer;

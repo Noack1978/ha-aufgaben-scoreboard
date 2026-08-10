@@ -247,14 +247,23 @@ class AufgabenScoreboardCard extends HTMLElement {
   }
 }
 
-customElements.define("aufgaben-scoreboard-card", AufgabenScoreboardCard);
+// Defensiv gegen doppelte Registrierung abgesichert (z. B. falls das
+// Modul aus irgendeinem Grund zweimal geladen wird) - ein zweiter
+// customElements.define()-Aufruf für denselben Namen würde sonst mit
+// einer nicht abgefangenen DOMException abbrechen, noch bevor die
+// letzte Zeile dieser Datei (window.customCards.push) erreicht wird.
+if (!customElements.get("aufgaben-scoreboard-card")) {
+  customElements.define("aufgaben-scoreboard-card", AufgabenScoreboardCard);
+}
 
 // Registriert die Karte im grafischen Karten-Auswahldialog von Lovelace,
 // damit sie dort mit Namen/Beschreibung/Icon auffindbar ist.
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "aufgaben-scoreboard-card",
-  name: "Aufgaben-Scoreboard Karte",
-  description: "Zeigt deine offenen Aufgaben und deinen Punktestand.",
-  preview: false,
-});
+if (!window.customCards.some((karte) => karte.type === "aufgaben-scoreboard-card")) {
+  window.customCards.push({
+    type: "aufgaben-scoreboard-card",
+    name: "Aufgaben-Scoreboard Karte",
+    description: "Zeigt deine offenen Aufgaben und deinen Punktestand.",
+    preview: false,
+  });
+}

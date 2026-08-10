@@ -203,11 +203,212 @@ undo_completion:
 
 reset_score:
   name: Punktestand zurücksetzen
-  description: Setzt den Punktestand eines Benutzers auf 0 zurück. Nur für Administratoren.
+  description: >-
+    Setzt den Punktestand eines Benutzers auf 0 zurück und löscht dabei
+    auch dessen komplette Erledigungs-Historie. Nur für Administratoren.
   fields:
     user_id:
       name: Benutzer-ID
       description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
+
+perform_awards:
+  name: Siegerehrung durchführen
+  description: >-
+    Ermittelt den/die Benutzer mit dem aktuell höchsten Punktestand
+    (bei Gleichstand gewinnen alle gleichermaßen) und erhöht deren
+    Sieg-Zähler dauerhaft um 1. Ist das Prämien-System aktiviert, wird
+    zusätzlich jedem Benutzer sein aktueller Punktestand aufs
+    Punktekonto gutgeschrieben. Anschließend werden ALLE Punktestände
+    gleichzeitig auf 0 zurückgesetzt (neue Runde beginnt). Nur für
+    Administratoren.
+
+reset_wins:
+  name: Sieg-Zähler zurücksetzen
+  description: Setzt den Sieg-Zähler eines einzelnen Benutzers auf 0 zurück. Nur für Administratoren.
+  fields:
+    user_id:
+      name: Benutzer-ID
+      description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
+
+add_reward:
+  name: Prämie anlegen
+  description: >-
+    Legt eine neue Prämie an, die gegen Punktekonto-Guthaben eingelöst
+    werden kann. Nur relevant, wenn das Prämien-System aktiviert ist.
+    Nur für Administratoren.
+  fields:
+    name:
+      name: Titel
+      description: Kurzer, aussagekräftiger Titel.
+      required: true
+      example: "Kinobesuch"
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      description: Optionale, ausführlichere Beschreibung.
+      required: false
+      selector:
+        text:
+          multiline: true
+    cost:
+      name: Preis
+      description: Anzahl der Punkte, die beim Einlösen vom Punktekonto abgezogen werden.
+      required: true
+      example: 50
+      selector:
+        number:
+          min: 0
+          max: 100000
+          mode: box
+    reward_type:
+      name: Typ
+      description: >-
+        "generic" = einfache Aktivität, nur Protokollierung + Event
+        (z. B. für eigene Automationen). "internet_time" = schaltet
+        beim Einlösen eine hinterlegte switch-Entität für die
+        angegebene Dauer ein.
+      required: false
+      default: generic
+      selector:
+        select:
+          options:
+            - "generic"
+            - "internet_time"
+    switch_entity_id:
+      name: Zu schaltende Entität
+      description: Nur bei Typ "internet_time" - die switch-Entität, die beim Einlösen ein-/nach Ablauf wieder ausgeschaltet wird.
+      required: false
+      selector:
+        entity:
+          domain: switch
+    duration_minutes:
+      name: Dauer (Minuten)
+      description: Nur bei Typ "internet_time" - wie lange die Entität eingeschaltet bleibt.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 1440
+          mode: box
+
+update_reward:
+  name: Prämie bearbeiten
+  description: >-
+    Bearbeitet eine bestehende Prämie nachträglich. Nur angegebene
+    Felder werden geändert. Nur für Administratoren.
+  fields:
+    reward_id:
+      name: Prämien-ID
+      description: Die eindeutige ID der zu bearbeitenden Prämie.
+      required: true
+      selector:
+        text:
+    name:
+      name: Titel
+      required: false
+      selector:
+        text:
+    description:
+      name: Beschreibung
+      required: false
+      selector:
+        text:
+          multiline: true
+    cost:
+      name: Preis
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100000
+          mode: box
+    reward_type:
+      name: Typ
+      required: false
+      selector:
+        select:
+          options:
+            - "generic"
+            - "internet_time"
+    switch_entity_id:
+      name: Zu schaltende Entität
+      required: false
+      selector:
+        entity:
+          domain: switch
+    duration_minutes:
+      name: Dauer (Minuten)
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 1440
+          mode: box
+
+remove_reward:
+  name: Prämie löschen
+  description: >-
+    Entfernt eine Prämie unwiderruflich. Bereits erfolgte Einlösungen
+    bleiben in der Historie erhalten. Nur für Administratoren.
+  fields:
+    reward_id:
+      name: Prämien-ID
+      description: Die eindeutige ID der zu löschenden Prämie.
+      required: true
+      selector:
+        text:
+
+request_redemption:
+  name: Prämie anfragen
+  description: >-
+    Fordert eine Prämie an - prüft das Guthaben und legt bei Erfolg
+    eine Anfrage an, die erst durch einen Administrator freigegeben
+    werden muss (analog zur Aufgaben-Erledigung). Wird keine
+    Benutzer-ID angegeben, wird der aufrufende Benutzer verwendet.
+  fields:
+    reward_id:
+      name: Prämien-ID
+      description: Die eindeutige ID der gewünschten Prämie.
+      required: true
+      selector:
+        text:
+    user_id:
+      name: Benutzer-ID
+      description: Optionale Benutzer-ID. Ohne Angabe wird der aufrufende Benutzer verwendet.
+      required: false
+      selector:
+        text:
+
+approve_redemption:
+  name: Einlösung freigeben
+  description: >-
+    Gibt eine angefragte Prämien-Einlösung frei: bucht die Punkte vom
+    Guthaben ab und schaltet bei "internet_time"-Prämien die
+    hinterlegte Entität ein. Nur für Administratoren.
+  fields:
+    redemption_id:
+      name: Einlösungs-ID
+      description: Die eindeutige ID der Einlösungs-Anfrage.
+      required: true
+      selector:
+        text:
+
+reject_redemption:
+  name: Einlösung ablehnen
+  description: >-
+    Lehnt eine angefragte Prämien-Einlösung ab - kein Punktabzug. Nur
+    für Administratoren.
+  fields:
+    redemption_id:
+      name: Einlösungs-ID
+      description: Die eindeutige ID der Einlösungs-Anfrage.
       required: true
       selector:
         text:

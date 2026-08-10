@@ -1,12 +1,28 @@
 """
 Integration "Aufgaben-Punktesystem" für Home Assistant.
 
-Diese Datei ist der Einstiegspunkt der Integration. Sie wird von Home
-Assistant automatisch geladen, sobald die Integration über die UI
-("Einstellungen -> Geräte & Dienste -> Integration hinzufügen")
-eingerichtet wurde (siehe config_flow.py).
+Diese Datei ist der Einstiegspunkt der Integration. Home Assistant ruft
+zwei getrennte Setup-Funktionen auf:
 
-Aufgaben dieser Datei:
+    - async_setup(): EINMAL pro Home-Assistant-Prozess (nicht bei jedem
+      Neuladen des Config-Entries) - hier wird der statische
+      Frontend-Pfad registriert und die Custom Card als
+      Lovelace-Ressource eingetragen. Diese Trennung UND das direkte
+      Arbeiten mit dem echten hass.data["lovelace"]-Objekt (statt einer
+      eigenen, separaten Store-Instanz) folgt dem offiziellen
+      Community-Leitfaden "Developer Guide: Embedded Lovelace Card in a
+      Home Assistant Integration" (Jan/Feb 2026) und umgeht damit
+      gezielt einen bestätigten Home-Assistant-Core-Bug (#165767): Die
+      Lovelace-Ressourcen-Sammlung wird lazy geladen; ein roher,
+      separater Store-Zugriff kann mit dem echten Objekt kollidieren
+      und bestehende Einträge überschreiben.
+    - async_setup_entry(): einmal pro eingerichtetem Config-Entry (bei
+      dieser Integration wegen "single_config_entry": true faktisch nur
+      einmal insgesamt, kann aber bei jedem Neuladen erneut laufen).
+      Hier passiert alles, was an den Lebenszyklus des Entries gebunden
+      ist: Datenmanager, Sensoren, Services, Sidebar-Panel.
+
+Aufgaben von async_setup_entry():
     1. Den zentralen Datenmanager (AufgabenScoreboardManager) erstellen
        und dessen gespeicherte Daten laden.
     2. Die Sensor-Plattform (ein Sensor pro Home-Assistant-Benutzer)
@@ -16,21 +32,19 @@ Aufgaben dieser Datei:
        reject_task, undo_completion, reset_score, ...), damit diese in
        Automationen/Skripten UND vom Sidebar-Panel aus aufgerufen
        werden können.
-    4. Die statischen Frontend-Dateien (Sidebar-Panel UND Custom Card)
-       unter einer festen URL bereitstellen, die Custom Card global für
-       alle Dashboards registrieren und das Sidebar-Panel bei Home
-       Assistant registrieren.
+    4. Das Sidebar-Panel bei Home Assistant registrieren (der statische
+       Pfad dafür wurde bereits in async_setup() eingerichtet).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import voluptuous as vol
 
 from homeassistant.components.frontend import (
-    add_extra_js_url,
     async_register_built_in_panel,
     async_remove_panel,
 )
@@ -39,18 +53,26 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.event import async_call_later
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     ATTR_ASSIGNED_TO,
     ATTR_COMPLETION_ID,
+    ATTR_COST,
     ATTR_DESCRIPTION,
+    ATTR_DURATION_MINUTES,
     ATTR_MULTISCORING,
     ATTR_NAME,
+    ATTR_REDEMPTION_ID,
+    ATTR_REWARD_ID,
+    ATTR_REWARD_TYPE,
     ATTR_SCHEDULE_INTERVAL,
     ATTR_SCHEDULE_TYPE,
     ATTR_SCHEDULE_WEEKDAY,
     ATTR_SCORE,
+    ATTR_SWITCH_ENTITY_ID,
     ATTR_TASK_ID,
     ATTR_TEMPLATE_ID,
     ATTR_TRIGGER_ENTITY_ID,
@@ -59,25 +81,37 @@ from .const import (
     CARD_JS_FILENAME,
     DOMAIN,
     FRONTEND_URL_BASE,
+    INTEGRATION_VERSION,
+    OPTION_REWARDS_ENABLED,
     PANEL_ICON,
     PANEL_JS_FILENAME,
     PANEL_TITLE,
     PANEL_URL_PATH,
     PLATFORMS,
+    REWARD_TYPE_GENERIC,
+    REWARD_TYPE_INTERNET_TIME,
     SCHEDULE_TYPE_DAYS,
     SCHEDULE_TYPE_WEEKLY,
+    SERVICE_ADD_REWARD,
     SERVICE_ADD_TASK,
     SERVICE_ADD_TEMPLATE,
+    SERVICE_APPROVE_REDEMPTION,
     SERVICE_APPROVE_TASK,
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
     SERVICE_CREATE_TASK_FROM_TEMPLATE,
+    SERVICE_PERFORM_AWARDS,
+    SERVICE_REJECT_REDEMPTION,
     SERVICE_REJECT_TASK,
+    SERVICE_REMOVE_REWARD,
     SERVICE_REMOVE_TASK,
     SERVICE_REMOVE_TEMPLATE,
+    SERVICE_REQUEST_REDEMPTION,
     SERVICE_RESET_SCORE,
+    SERVICE_RESET_WINS,
     SERVICE_UNASSIGN_TASK,
     SERVICE_UNDO_COMPLETION,
+    SERVICE_UPDATE_REWARD,
     SERVICE_UPDATE_TASK,
     SERVICE_UPDATE_TEMPLATE,
 )
@@ -85,7 +119,7 @@ from .manager import AufgabenScoreboardManager
 
 _LOGGER = logging.getLogger(__name__)
 
-# Verzeichnis, in dem die JavaScript-Dateien für Panel und Custom Card
+# Verzeichnis, in dem die JavaScript-Dateien (Panel + Custom Card)
 # innerhalb dieser Integration liegen.
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
@@ -134,7 +168,7 @@ SCHEMA_COMPLETE_TASK = vol.Schema(
     {
         vol.Required(ATTR_TASK_ID): cv.string,
         # user_id optional: fehlt er, wird der aufrufende Benutzer
-        # verwendet (praktisch für die Custom Card).
+        # verwendet (praktisch beim Aufruf über das Panel).
         vol.Optional(ATTR_USER_ID): cv.string,
     }
 )
@@ -199,6 +233,187 @@ SCHEMA_REMOVE_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
 
 SCHEMA_CREATE_TASK_FROM_TEMPLATE = vol.Schema({vol.Required(ATTR_TEMPLATE_ID): cv.string})
 
+# -----------------------------------------------------------------------
+# Siegerehrung
+# -----------------------------------------------------------------------
+
+SCHEMA_PERFORM_AWARDS = vol.Schema({})
+
+SCHEMA_RESET_WINS = vol.Schema({vol.Required(ATTR_USER_ID): cv.string})
+
+# -----------------------------------------------------------------------
+# Prämien-System
+# -----------------------------------------------------------------------
+
+SCHEMA_ADD_REWARD = vol.Schema(
+    {
+        vol.Required(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION, default=""): cv.string,
+        vol.Required(ATTR_COST): vol.Coerce(int),
+        vol.Optional(ATTR_REWARD_TYPE, default=REWARD_TYPE_GENERIC): vol.In(
+            [REWARD_TYPE_GENERIC, REWARD_TYPE_INTERNET_TIME]
+        ),
+        vol.Optional(ATTR_SWITCH_ENTITY_ID): cv.entity_id,
+        vol.Optional(ATTR_DURATION_MINUTES): vol.Coerce(int),
+    }
+)
+
+SCHEMA_UPDATE_REWARD = vol.Schema(
+    {
+        vol.Required(ATTR_REWARD_ID): cv.string,
+        vol.Optional(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_DESCRIPTION): cv.string,
+        vol.Optional(ATTR_COST): vol.Coerce(int),
+        vol.Optional(ATTR_REWARD_TYPE): vol.In([REWARD_TYPE_GENERIC, REWARD_TYPE_INTERNET_TIME]),
+        vol.Optional(ATTR_SWITCH_ENTITY_ID): vol.Any(cv.entity_id, ""),
+        vol.Optional(ATTR_DURATION_MINUTES): vol.Coerce(int),
+    }
+)
+
+SCHEMA_REMOVE_REWARD = vol.Schema({vol.Required(ATTR_REWARD_ID): cv.string})
+
+SCHEMA_REQUEST_REDEMPTION = vol.Schema(
+    {
+        vol.Required(ATTR_REWARD_ID): cv.string,
+        vol.Optional(ATTR_USER_ID): cv.string,
+    }
+)
+
+SCHEMA_APPROVE_REDEMPTION = vol.Schema({vol.Required(ATTR_REDEMPTION_ID): cv.string})
+
+SCHEMA_REJECT_REDEMPTION = vol.Schema({vol.Required(ATTR_REDEMPTION_ID): cv.string})
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """
+    Domain-weites Setup - läuft EINMAL pro Home-Assistant-Prozess, noch
+    bevor async_setup_entry() für den (einzigen) Config-Entry aufgerufen
+    wird, und wird NICHT erneut ausgeführt, wenn der Entry später neu
+    geladen wird. Registriert deshalb hier (statt in async_setup_entry)
+    alles, was wirklich nur einmal pro laufendem Home Assistant
+    passieren muss: den statischen Frontend-Pfad (liefert sowohl die
+    Panel- als auch die Karten-JS-Datei aus) sowie die Custom Card als
+    Lovelace-Ressource. Siehe Datei-Docstring für den Hintergrund.
+    """
+
+    async def _setup_frontend(_event=None) -> None:
+        await _async_register_static_path(hass)
+        await _async_register_card_resource(hass)
+
+    if hass.state is CoreState.running:
+        await _setup_frontend()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _setup_frontend)
+
+    return True
+
+
+async def _async_register_static_path(hass: HomeAssistant) -> None:
+    """
+    Registriert den statischen Pfad /aufgaben_scoreboard_frontend/, der
+    das komplette frontend/-Verzeichnis (Panel- UND Karten-JS)
+    ausliefert - ein einziger Aufruf deckt beide Dateien ab.
+    """
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    FRONTEND_URL_BASE,
+                    str(FRONTEND_DIR),
+                    cache_headers=False,
+                )
+            ]
+        )
+        _LOGGER.debug("Statischer Frontend-Pfad registriert: %s", FRONTEND_URL_BASE)
+    except RuntimeError:
+        # Kann bei einem echten Home-Assistant-Neustart mit bereits
+        # vorhandenen alten Zustandsresten passieren - da diese
+        # Registrierung dank async_setup() jetzt ohnehin nur einmal pro
+        # Prozess läuft, ist das nur noch eine zusätzliche Absicherung,
+        # kein regulärer Fall mehr.
+        _LOGGER.debug("Statischer Frontend-Pfad '%s' war bereits registriert.", FRONTEND_URL_BASE)
+
+
+async def _async_register_card_resource(hass: HomeAssistant) -> None:
+    """
+    Trägt die Custom Card als Lovelace-Ressource ein - über das ECHTE,
+    laufende Home-Assistant-Lovelace-Objekt (hass.data["lovelace"]),
+    NICHT über eine eigene, separate Store-Instanz. Nur im
+    Storage-Modus möglich (Standardfall); im YAML-Modus muss die
+    Ressource manuell eingetragen werden (siehe README).
+    """
+    lovelace = hass.data.get("lovelace")
+    if lovelace is None:
+        _LOGGER.warning(
+            "Lovelace-Komponente war beim Registrieren der Custom Card noch nicht bereit - "
+            "sie steht ggf. erst nach einem erneuten Neustart zur Verfügung."
+        )
+        return
+
+    if getattr(lovelace, "mode", None) != "storage":
+        _LOGGER.info(
+            "Lovelace läuft im YAML-Modus - die Custom Card muss dort manuell als Ressource "
+            "eingetragen werden (URL: %s/%s). Siehe README.",
+            FRONTEND_URL_BASE,
+            CARD_JS_FILENAME,
+        )
+        return
+
+    await _async_warte_auf_lovelace_ressourcen(hass, lovelace)
+
+
+async def _async_warte_auf_lovelace_ressourcen(hass: HomeAssistant, lovelace: Any) -> None:
+    """
+    Wartet - mit Wiederholung alle 5 Sekunden - bis Home Assistants
+    eigene Lovelace-Ressourcen-Sammlung fertig von der Festplatte
+    geladen ist (lovelace.resources.loaded), bevor darauf zugegriffen
+    wird. Genau das umgeht den bekannten Lazy-Load-Bug (siehe
+    Datei-Docstring): Zugriffe VOR dem vollständigen Laden würden eine
+    leere Sammlung sehen und könnten bestehende Einträge überschreiben.
+    """
+
+    async def _pruefen(_now: Any = None) -> None:
+        if lovelace.resources.loaded:
+            await _async_karte_als_ressource_eintragen(lovelace)
+        else:
+            _LOGGER.debug("Lovelace-Ressourcen noch nicht geladen - erneuter Versuch in 5s.")
+            async_call_later(hass, 5, _pruefen)
+
+    await _pruefen()
+
+
+async def _async_karte_als_ressource_eintragen(lovelace: Any) -> None:
+    """
+    Legt den Lovelace-Ressourcen-Eintrag für die Custom Card an, bzw.
+    aktualisiert dessen Versions-Parameter, falls sich die
+    Integrations-Version seit dem letzten Eintrag geändert hat
+    (Cache-Busting: Browser laden nach einem Update zuverlässig die
+    neue Datei statt einer alten, gecachten Version).
+    """
+    karten_url_ohne_version = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
+    versionierte_url = f"{karten_url_ohne_version}?v={INTEGRATION_VERSION}"
+
+    vorhandene_eintraege = [
+        eintrag
+        for eintrag in lovelace.resources.async_items()
+        if eintrag["url"].split("?")[0] == karten_url_ohne_version
+    ]
+
+    if not vorhandene_eintraege:
+        await lovelace.resources.async_create_item({"res_type": "module", "url": versionierte_url})
+        _LOGGER.info(
+            "Aufgaben-Scoreboard: Custom Card als Lovelace-Ressource eingetragen (%s).", versionierte_url
+        )
+        return
+
+    eintrag = vorhandene_eintraege[0]
+    aktuell_eingetragene_version = eintrag["url"].split("?v=")[-1] if "?v=" in eintrag["url"] else None
+    if aktuell_eingetragene_version != INTEGRATION_VERSION:
+        await lovelace.resources.async_update_item(eintrag["id"], {"res_type": "module", "url": versionierte_url})
+        _LOGGER.info("Aufgaben-Scoreboard: Custom Card auf Version %s aktualisiert.", INTEGRATION_VERSION)
+    else:
+        _LOGGER.debug("Aufgaben-Scoreboard: Custom Card war bereits in aktueller Version eingetragen.")
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
@@ -233,6 +448,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # aktivieren - inkl. einmaliger Nachhol-Prüfung für den aktuellen Tag.
     manager.async_setup_schedule()
 
+    # Internet-Zeit-Prämien: für alle bereits freigegebenen, noch aktiven
+    # Einlösungen die Restlaufzeit prüfen und ggf. sofort nachholend
+    # abschalten oder den Abschalt-Timer neu setzen (siehe Docstring von
+    # async_setup_reward_timers() - relevant nach einem HA-Neustart,
+    # während dessen der ursprüngliche Timer verloren ging).
+    manager.async_setup_reward_timers()
+
     # ------------------------------------------------------------------
     # 2. Sensor-Plattform laden (ein Sensor pro Benutzer + Übersicht)
     # ------------------------------------------------------------------
@@ -241,10 +463,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ------------------------------------------------------------------
     # 3. Services registrieren
     # ------------------------------------------------------------------
-    _async_register_services(hass, manager)
+    _async_register_services(hass, entry, manager)
 
     # ------------------------------------------------------------------
-    # 4. Frontend (Custom Card + Sidebar-Panel) registrieren
+    # 4. Frontend (Sidebar-Panel) registrieren
     #
     # WICHTIG: async_register_static_paths() und
     # async_register_built_in_panel() dürfen erst aufgerufen werden,
@@ -311,6 +533,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_REJECT_TASK,
                 SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
+                SERVICE_PERFORM_AWARDS,
+                SERVICE_RESET_WINS,
+                SERVICE_ADD_REWARD,
+                SERVICE_UPDATE_REWARD,
+                SERVICE_REMOVE_REWARD,
+                SERVICE_REQUEST_REDEMPTION,
+                SERVICE_APPROVE_REDEMPTION,
+                SERVICE_REJECT_REDEMPTION,
                 SERVICE_ADD_TEMPLATE,
                 SERVICE_UPDATE_TEMPLATE,
                 SERVICE_REMOVE_TEMPLATE,
@@ -351,7 +581,7 @@ async def _ist_admin(hass: HomeAssistant, call: ServiceCall) -> bool:
     return bool(benutzer and benutzer.is_admin)
 
 
-def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardManager) -> None:
+def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: AufgabenScoreboardManager) -> None:
     """Registriert alle von dieser Integration bereitgestellten Services."""
 
     async def handle_add_task(call: ServiceCall) -> None:
@@ -397,8 +627,8 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
     async def handle_complete_task(call: ServiceCall) -> None:
         # Wird kein user_id mitgegeben, wird der aufrufende Benutzer
-        # verwendet - das ist der Normalfall bei Nutzung über die
-        # Custom Card / das Sidebar-Panel.
+        # verwendet - das ist der Normalfall bei Nutzung über das
+        # Sidebar-Panel.
         user_id = call.data.get(ATTR_USER_ID) or call.context.user_id
         if not user_id:
             _LOGGER.error(
@@ -441,6 +671,84 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
             _LOGGER.warning("Nicht-Administrator hat versucht, einen Punktestand zurückzusetzen - abgelehnt.")
             return
         await manager.async_reset_score(call.data[ATTR_USER_ID])
+
+    async def handle_perform_awards(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Siegerehrung durchzuführen - abgelehnt.")
+            return
+        praemien_aktiviert = entry.options.get(OPTION_REWARDS_ENABLED, False)
+        await manager.async_perform_awards(praemien_aktiviert)
+
+    async def handle_reset_wins(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, einen Sieg-Zähler zurückzusetzen - abgelehnt.")
+            return
+        await manager.async_reset_wins(call.data[ATTR_USER_ID])
+
+    async def handle_add_reward(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Prämie anzulegen - abgelehnt.")
+            return
+        await manager.async_add_reward(
+            name=call.data[ATTR_NAME],
+            description=call.data.get(ATTR_DESCRIPTION, ""),
+            cost=call.data[ATTR_COST],
+            reward_type=call.data.get(ATTR_REWARD_TYPE, REWARD_TYPE_GENERIC),
+            switch_entity_id=call.data.get(ATTR_SWITCH_ENTITY_ID),
+            duration_minutes=call.data.get(ATTR_DURATION_MINUTES),
+        )
+
+    async def handle_update_reward(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Prämie zu bearbeiten - abgelehnt.")
+            return
+        await manager.async_update_reward(
+            reward_id=call.data[ATTR_REWARD_ID],
+            name=call.data.get(ATTR_NAME),
+            description=call.data.get(ATTR_DESCRIPTION),
+            cost=call.data.get(ATTR_COST),
+            reward_type=call.data.get(ATTR_REWARD_TYPE),
+            switch_entity_id=call.data.get(ATTR_SWITCH_ENTITY_ID),
+            duration_minutes=call.data.get(ATTR_DURATION_MINUTES),
+        )
+
+    async def handle_remove_reward(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Prämie zu löschen - abgelehnt.")
+            return
+        await manager.async_remove_reward(call.data[ATTR_REWARD_ID])
+
+    async def handle_request_redemption(call: ServiceCall) -> None:
+        # Wird kein user_id mitgegeben, wird der aufrufende Benutzer
+        # verwendet - Normalfall bei Nutzung über das Sidebar-Panel.
+        user_id = call.data.get(ATTR_USER_ID) or call.context.user_id
+        if not user_id:
+            _LOGGER.error(
+                "request_redemption: Es konnte kein Benutzer ermittelt werden "
+                "(weder user_id angegeben noch Aufrufkontext vorhanden)."
+            )
+            return
+        # Ein normaler Benutzer darf nur FÜR SICH SELBST eine Prämie
+        # anfragen. Administratoren dürfen dies stellvertretend tun.
+        if call.context.user_id and call.context.user_id != user_id and not await _ist_admin(hass, call):
+            _LOGGER.warning(
+                "Benutzer hat versucht, eine Prämie für einen anderen Benutzer "
+                "anzufragen, ohne Administrator zu sein - abgelehnt."
+            )
+            return
+        await manager.async_request_redemption(call.data[ATTR_REWARD_ID], user_id)
+
+    async def handle_approve_redemption(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Einlösung freizugeben - abgelehnt.")
+            return
+        await manager.async_approve_redemption(call.data[ATTR_REDEMPTION_ID])
+
+    async def handle_reject_redemption(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, eine Einlösung abzulehnen - abgelehnt.")
+            return
+        await manager.async_reject_redemption(call.data[ATTR_REDEMPTION_ID])
 
     async def handle_add_template(call: ServiceCall) -> None:
         if not await _ist_admin(hass, call):
@@ -498,6 +806,22 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_TASK, handle_complete_task, schema=SCHEMA_COMPLETE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_RESET_SCORE, handle_reset_score, schema=SCHEMA_RESET_SCORE)
+    hass.services.async_register(
+        DOMAIN, SERVICE_PERFORM_AWARDS, handle_perform_awards, schema=SCHEMA_PERFORM_AWARDS
+    )
+    hass.services.async_register(DOMAIN, SERVICE_RESET_WINS, handle_reset_wins, schema=SCHEMA_RESET_WINS)
+    hass.services.async_register(DOMAIN, SERVICE_ADD_REWARD, handle_add_reward, schema=SCHEMA_ADD_REWARD)
+    hass.services.async_register(DOMAIN, SERVICE_UPDATE_REWARD, handle_update_reward, schema=SCHEMA_UPDATE_REWARD)
+    hass.services.async_register(DOMAIN, SERVICE_REMOVE_REWARD, handle_remove_reward, schema=SCHEMA_REMOVE_REWARD)
+    hass.services.async_register(
+        DOMAIN, SERVICE_REQUEST_REDEMPTION, handle_request_redemption, schema=SCHEMA_REQUEST_REDEMPTION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_APPROVE_REDEMPTION, handle_approve_redemption, schema=SCHEMA_APPROVE_REDEMPTION
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_REJECT_REDEMPTION, handle_reject_redemption, schema=SCHEMA_REJECT_REDEMPTION
+    )
     hass.services.async_register(DOMAIN, SERVICE_APPROVE_TASK, handle_approve_task, schema=SCHEMA_APPROVE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_REJECT_TASK, handle_reject_task, schema=SCHEMA_REJECT_TASK)
     hass.services.async_register(
@@ -520,83 +844,24 @@ def _async_register_services(hass: HomeAssistant, manager: AufgabenScoreboardMan
 
 async def _async_setup_frontend(hass: HomeAssistant) -> None:
     """
-    Stellt die JavaScript-Dateien (Custom Card + Panel) über einen
-    statischen HTTP-Pfad bereit und registriert:
-      - die Custom Card global (add_extra_js_url), damit sie in JEDER
-        Dashboard-Ansicht per "type: custom:aufgaben-scoreboard-card"
-        verwendet werden kann, ohne dass der Benutzer manuell eine
-        Lovelace-Ressource hinzufügen muss.
-      - ein eigenes Panel in der Seitenleiste, das die volle
-        Aufgabenübersicht (inkl. Admin-Funktionen) als eigene Seite
-        zeigt.
+    Registriert das Sidebar-Panel bei Home Assistant.
+
+    Der statische HTTP-Pfad, der die JS-Datei tatsächlich ausliefert,
+    wird NICHT hier, sondern bereits einmalig in async_setup()
+    registriert (deckt Panel- und Karten-JS gemeinsam ab). Diese
+    Funktion kümmert sich nur noch um die Panel-Registrierung selbst,
+    die - anders als der statische Pfad - an den Lebenszyklus dieses
+    Config-Entries gebunden ist (siehe async_remove_panel() in
+    async_unload_entry).
     """
-    card_pfad = FRONTEND_DIR / CARD_JS_FILENAME
     panel_pfad = FRONTEND_DIR / PANEL_JS_FILENAME
 
-    if not card_pfad.exists() or not panel_pfad.exists():
+    if not panel_pfad.exists():
         _LOGGER.error(
-            "Frontend-Dateien der Integration fehlen (%s). "
-            "Custom Card und Sidebar-Panel stehen nicht zur Verfügung.",
-            FRONTEND_DIR,
+            "Frontend-Datei des Sidebar-Panels fehlt (%s). Das Panel steht nicht zur Verfügung.",
+            panel_pfad,
         )
         return
-
-    # Statischen Pfad registrieren: alles unter /aufgaben_scoreboard_frontend/
-    # wird aus dem lokalen "frontend"-Ordner der Integration ausgeliefert.
-    #
-    # WICHTIG: Wird die Integration neu geladen, OHNE dass Home Assistant
-    # komplett neu gestartet wurde, kann aiohttp beim erneuten
-    # Registrieren desselben Pfads mit einem RuntimeError ("Added route
-    # will never be executed, method GET is already registered")
-    # abbrechen - es gibt für den statischen Pfad (anders als beim Panel,
-    # siehe async_remove_panel() in async_unload_entry) kein Gegenstück
-    # zum Abmelden. Derselbe Fehler trat bereits konkret bei
-    # ha-parcel-tracking (behoben in v1.0.4) und ha-step-challenge auf;
-    # der Fix dort - gezielt NUR RuntimeError abfangen - wird hier 1:1
-    # übernommen, damit dieser eine, bekannte Fall den Rest der
-    # Frontend-Registrierung (Custom Card, Panel) nicht blockiert.
-    try:
-        await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    FRONTEND_URL_BASE,
-                    str(FRONTEND_DIR),
-                    cache_headers=False,
-                )
-            ]
-        )
-        _LOGGER.debug("Statischer Frontend-Pfad registriert: %s", FRONTEND_URL_BASE)
-    except RuntimeError:
-        _LOGGER.debug(
-            "Statischer Frontend-Pfad '%s' war bereits registriert (normal bei "
-            "einem Neuladen der Integration ohne Home-Assistant-Neustart).",
-            FRONTEND_URL_BASE,
-        )
-
-    # Custom Card global für alle Dashboards verfügbar machen.
-    #
-    # WICHTIG: Home Assistant lädt je nach Browser/Client entweder den
-    # "latest"-Modus (ES-Module, per import()) ODER den "es5"-Modus
-    # (klassisches <script>-Tag, für als "alt" erkannte Clients) - laut
-    # offizieller Doku werden beide NIE gleichzeitig geladen. Ohne
-    # explizite Angabe registriert add_extra_js_url() die Karte nur für
-    # den "latest"-Modus (es5=False). Wird ein Client (z. B. Chrome auf
-    # Android ohne aktivierten "Desktop-Modus") von HA fälschlich als
-    # ES5-Kandidat eingestuft, fehlt die Karte dort komplett -> "Custom
-    # element doesn't exist". Daher wird hier zusätzlich explizit auch
-    # für den ES5-Modus registriert; das Karten-JS selbst nutzt zwar
-    # moderne Syntax, läuft aber in jedem tatsächlich relevanten Browser
-    # unabhängig davon, über welches der beiden <script>-Ladeverfahren
-    # es eingebunden wird.
-    card_url = f"{FRONTEND_URL_BASE}/{CARD_JS_FILENAME}"
-    add_extra_js_url(hass, card_url)
-    add_extra_js_url(hass, card_url, es5=True)
-    _LOGGER.info(
-        "Aufgaben-Scoreboard: Custom Card unter %s registriert (sowohl für den "
-        "'latest'- als auch den 'es5'-Frontend-Modus; Direktaufruf zum Testen im "
-        "Browser möglich).",
-        card_url,
-    )
 
     # Sidebar-Panel registrieren. component_name "custom" sorgt dafür,
     # dass Home Assistant das angegebene JavaScript-Modul als eigenes

@@ -16,9 +16,10 @@ Benutzern zugewiesen werden.
 - **Eigenes Sidebar-Panel** ("Aufgaben") in der Seitenleiste mit
   vollständiger Verwaltung (Anlegen, Zuweisen, Löschen – nur für
   Administratoren) sowie einer Rangliste aller Benutzer
-- **Custom Card** (`custom:aufgaben-scoreboard-card`), die in jedem
-  beliebigen Dashboard platziert werden kann und die eigenen offenen
-  Aufgaben samt "Erledigt"-Button zeigt
+- **Custom Card** (`custom:aufgaben-scoreboard-card`) für die eigenen
+  offenen Aufgaben direkt in einem beliebigen Dashboard, sowie
+  alternativ eine native **Markdown-Karte** (Vorlage weiter unten) für
+  die Übersicht aller offenen Aufgaben ohne Custom Element
 - **Freigabe-Workflow**: Erledigungen warten auf Bestätigung durch einen
   Administrator, bevor Punkte gutgeschrieben werden – inkl. Verlauf pro
   Benutzer und nachträglicher Rücknahme-Möglichkeit (zeitlich/mengenmäßig
@@ -27,11 +28,20 @@ Benutzern zugewiesen werden.
   **Multiscoring** (eigene Aufgabe pro zugewiesenem Benutzer) sowie
   automatischer Anlage per **Entitäts-Trigger** und/oder **Zeitplan**
   (alle X Tage oder wöchentlich an einem festen Wochentag)
+- **Siegerehrung**: ermittelt den/die Benutzer mit dem höchsten
+  Punktestand (dauerhafter Sieg-Zähler pro Benutzer) und setzt
+  anschließend alle Punktestände für eine neue Runde zurück
+- **Prämien-System** (optional aktivierbar): Punktekonto, das bei der
+  Siegerehrung gespeist wird, sowie einlösbare Prämien – generisch (nur
+  Protokollierung) oder "Internet-Zeit" (schaltet eine hinterlegte
+  Entität für konfigurierbare Dauer ein, übersteht HA-Neustarts)
 - **Services** für Automationen/Skripte: `add_task`, `update_task`,
   `remove_task`, `assign_task`, `unassign_task`, `complete_task`,
   `approve_task`, `reject_task`, `undo_completion`, `reset_score`,
-  `add_template`, `update_template`, `remove_template`,
-  `create_task_from_template`
+  `perform_awards`, `reset_wins`, `add_template`, `update_template`,
+  `remove_template`, `create_task_from_template`, `add_reward`,
+  `update_reward`, `remove_reward`, `request_redemption`,
+  `approve_redemption`, `reject_redemption`
 - Daten werden lokal in der Home-Assistant-Storage gespeichert – keine
   Cloud, keine externen Abhängigkeiten
 
@@ -72,11 +82,12 @@ Benutzern zugewiesen werden.
 3. Home Assistant neu starten und wie oben über **Einstellungen →
    Geräte & Dienste** hinzufügen.
 
-Nach der Einrichtung erscheinen automatisch:
-
-- ein neuer Eintrag **"Aufgaben"** in der Seitenleiste,
-- die Custom Card `custom:aufgaben-scoreboard-card` zur Verwendung in
-  eigenen Dashboards.
+Nach der Einrichtung erscheinen automatisch ein neuer Eintrag
+**"Aufgaben"** in der Seitenleiste sowie die Custom Card (auch sichtbar
+unter **Einstellungen → Dashboards → Ressourcen**, sofern deine
+Dashboards im Storage-Modus laufen – dem Standard). Für eine
+Aufgaben-Übersicht mit allen (nicht nur eigenen) offenen Aufgaben siehe
+zusätzlich den Abschnitt "Aufgaben im Dashboard anzeigen" weiter unten.
 
 ## 🖥️ Nutzung
 
@@ -170,6 +181,53 @@ Benutzer. In der Übersicht erscheint dadurch pro Benutzer eine eigene
 Karte; erledigt jemand seine, verschwindet nur diese – die Aufgaben der
 übrigen zugewiesenen Benutzer bleiben unberührt bestehen.
 
+### Siegerehrung
+
+Der Button „Siegerehrung durchführen" (nur für Administratoren, oberhalb
+der Rangliste) ermittelt den/die Benutzer mit dem aktuell höchsten
+Punktestand – bei Gleichstand gewinnen **alle** Führenden gleichermaßen,
+ein Punktestand von 0 zählt nicht als Sieg. Vor der Bestätigung zeigt
+ein Dialog an, wer gerade führt. Nach der Durchführung:
+
+- Der **Sieg-Zähler** der Gewinner erhöht sich dauerhaft um 1 (🏆-Badge
+  in der Rangliste) – übersteht auch normale Punktestand-Resets.
+- **Alle** Punktestände werden gleichzeitig auf 0 zurückgesetzt, eine
+  neue Runde beginnt. Die Erledigungs-Historie bleibt dabei (anders als
+  beim einzelnen „Zurücksetzen"-Button) erhalten.
+- Ist das Prämien-System aktiviert (siehe unten), wird zusätzlich jedem
+  Benutzer sein Punktestand vor dem Reset aufs Punktekonto gutgeschrieben.
+
+Der Sieg-Zähler lässt sich pro Benutzer separat über „Siege
+zurücksetzen" auf 0 setzen, unabhängig vom Punktestand.
+
+### Prämien-System (optional)
+
+Standardmäßig **deaktiviert**. Aktivierbar über **Einstellungen →
+Geräte & Dienste → Aufgaben-Punktesystem → Konfigurieren**. Nach
+Aktivierung bekommt jeder Benutzer ein **Punktekonto** (💰-Badge in der
+Rangliste), das bei jeder Siegerehrung um seinen jeweiligen Punktestand
+wächst – ein laufendes Guthaben über beliebig viele Runden hinweg, kein
+Rundenlimit.
+
+Administratoren legen im Bereich „Prämien verwalten" Prämien mit einem
+Punktepreis an:
+
+- **Generisch**: reiner Eintrag, keine automatische Aktion – nur
+  Protokollierung + Event (`aufgaben_scoreboard_reward_redemption_*`),
+  z. B. für eigene Automationen wie eine Admin-Benachrichtigung.
+- **Internet-Zeit**: schaltet eine hinterlegte `switch`-Entität für eine
+  konfigurierbare Dauer ein und nach Ablauf automatisch wieder aus –
+  übersteht dabei auch einen Home-Assistant-Neustart während der
+  laufenden Zeit (die verbleibende Restzeit wird beim Start geprüft und
+  ggf. sofort nachgeholt).
+
+Benutzer sehen ihr Guthaben und die verfügbaren Prämien im Bereich „Mein
+Punktekonto" und können dort „Einlösen" anfragen – der „Einlösen"-Button
+ist deaktiviert, solange das Guthaben nicht ausreicht. Wie bei der
+Aufgaben-Erledigung muss ein Administrator die Anfrage erst freigeben
+(Bereich „Prämien-Einlösungen zur Freigabe"), bevor die Punkte
+abgebucht bzw. eine Internet-Zeit-Entität geschaltet wird.
+
 ### Custom Card im Dashboard
 
 Über den Dashboard-Editor eine neue Karte hinzufügen und
@@ -180,7 +238,87 @@ type: custom:aufgaben-scoreboard-card
 ```
 
 Die Karte benötigt keine weitere Konfiguration – sie erkennt den
-angemeldeten Benutzer automatisch.
+angemeldeten Benutzer automatisch und zeigt dessen offene Aufgaben samt
+"Erledigt"-Button.
+
+**Hinweis zur Registrierung:** Die Karte wird nach dem offiziellen
+Community-Leitfaden ["Developer Guide: Embedded Lovelace Card in a Home
+Assistant Integration"](https://gist.github.com/KipK/3cf706ac89573432803aaa2f5ca40492)
+registriert – über das echte, laufende Lovelace-Objekt von Home
+Assistant (`hass.data["lovelace"]`), inklusive Warten auf dessen
+vollständiges Laden und versionierten Ressourcen-URLs (`?v=1.4.0`) für
+zuverlässiges Cache-Busting nach Updates. Das umgeht gezielt einen
+bestätigten Home-Assistant-Core-Bug ([#165767](https://github.com/home-assistant/core/issues/165767)),
+bei dem ein roher, separater Zugriff auf die Lovelace-Ressourcen-Storage
+(der in früheren Versionen dieser Integration verwendet wurde) mit dem
+echten, lazy geladenen Objekt kollidieren und Einträge überschreiben
+konnte. Funktioniert automatisch nur im **Storage-Modus** (dem
+Standard); im YAML-Modus muss die Ressource manuell eingetragen werden:
+
+```yaml
+resources:
+  - url: /aufgaben_scoreboard_frontend/aufgaben-scoreboard-card.js
+    type: module
+```
+
+### Aufgaben im Dashboard anzeigen (Markdown-Karte)
+
+Alternative zur Custom Card oben: Eine Übersicht **aller** offenen
+Aufgaben (nicht nur der eigenen) lässt sich auch mit einer **nativen
+Markdown-Karte** abbilden - kein Custom Element, keine zusätzliche
+JavaScript-Registrierung nötig. Neue Karte → **Markdown** → in den
+YAML-Modus wechseln und folgenden Code einfügen:
+
+```yaml
+type: markdown
+title: 📋 Alle offenen Aufgaben
+content: |
+  {% set aufgaben = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'offene_aufgaben') %}
+  {% set benutzer_sensoren = states.sensor | selectattr('attributes.user_id', 'defined') | list %}
+  {%- if not aufgaben %}
+  Aktuell keine offenen Aufgaben. 🎉
+  {%- else %}
+  **{{ aufgaben | length }} offene Aufgabe(n)**
+
+  | Aufgabe | Punkte | Zuständig |
+  | --- | --- | --- |
+  {% for aufgabe in aufgaben | sort(attribute='name') -%}
+  {%- set ns = namespace(namen=[]) -%}
+  {%- for uid in aufgabe.assigned_to -%}
+  {%- for b in benutzer_sensoren -%}
+  {%- if b.attributes.user_id == uid -%}
+  {%- set ns.namen = ns.namen + [b.name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  | {{ aufgabe.name }}{% if aufgabe.description %} ({{ aufgabe.description }}){% endif %} | +{{ aufgabe.score }} | {{ ns.namen | join(', ') if ns.namen else 'Alle Benutzer' }} |
+  {% endfor -%}
+  {%- endif %}
+```
+
+**Hinweis zur Entity-ID:** `sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer`
+ist die Entity-ID des Übersichts-Sensors. Falls sie bei dir abweicht
+(z. B. durch ein Namenskollisions-Suffix), in **Entwicklerwerkzeuge →
+Zustände** nach "Offene Aufgaben" suchen und die erste Zeile im obigen
+Code entsprechend anpassen.
+
+**Optional - Spaltenbreiten anpassen:** Falls [`card_mod`](https://github.com/thomasloven/lovelace-card-mod)
+installiert ist, lässt sich die Tabellenbreite pro Spalte festlegen:
+
+```yaml
+card_mod:
+  style:
+    ha-markdown$: |
+      table {
+        table-layout: fixed;
+        width: 100%;
+      }
+      th:nth-child(1), td:nth-child(1) { width: 55%; }
+      th:nth-child(2), td:nth-child(2) { width: 15%; }
+      th:nth-child(3), td:nth-child(3) { width: 30%; }
+```
+
+Die Prozentwerte nach Bedarf anpassen (sollten zusammen ~100% ergeben).
 
 ### Aufgaben per Automation/Skript anlegen
 
@@ -211,7 +349,15 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.approve_task`  | Erledigung freigeben, Punkte werden jetzt gutgeschrieben | ✅        |
 | `aufgaben_scoreboard.reject_task`   | Erledigung ablehnen, Aufgabe wird wieder offen          | ✅        |
 | `aufgaben_scoreboard.undo_completion` | Bereits freigegebene Erledigung nachträglich zurücknehmen (Grenzen: 7 Tage / letzte 20 Einträge) | ✅ |
-| `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen          | ✅        |
+| `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen (löscht dabei auch dessen Erledigungs-Historie) | ✅ |
+| `aufgaben_scoreboard.perform_awards` | Siegerehrung durchführen: Sieg-Zähler des/der Gewinner +1, danach alle Punktestände zurücksetzen | ✅ |
+| `aufgaben_scoreboard.reset_wins`    | Sieg-Zähler eines Benutzers auf 0 zurücksetzen         | ✅        |
+| `aufgaben_scoreboard.add_reward`    | Prämie anlegen (nur bei aktiviertem Prämien-System relevant) | ✅   |
+| `aufgaben_scoreboard.update_reward` | Prämie nachträglich bearbeiten                         | ✅        |
+| `aufgaben_scoreboard.remove_reward` | Prämie löschen                                         | ✅        |
+| `aufgaben_scoreboard.request_redemption` | Prämie anfragen (wartet danach auf Freigabe, noch kein Punktabzug) | Nein¹ |
+| `aufgaben_scoreboard.approve_redemption` | Einlösung freigeben, Punkte werden abgebucht (+ ggf. Entität geschaltet) | ✅ |
+| `aufgaben_scoreboard.reject_redemption` | Einlösung ablehnen, kein Punktabzug                 | ✅        |
 | `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen, optional mit Entitäts- und/oder Zeitplan-Trigger | ✅        |
 | `aufgaben_scoreboard.update_template` | Standardaufgabe nachträglich bearbeiten               | ✅        |
 | `aufgaben_scoreboard.remove_template` | Standardaufgabe löschen                               | ✅        |
