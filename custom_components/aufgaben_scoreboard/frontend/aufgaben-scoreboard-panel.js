@@ -2032,6 +2032,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
         */
       }
       .rang-eintrag {
+        position: relative;
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
@@ -2059,7 +2060,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
         gap: 10px;
       }
       .rang-menu-wrapper {
-        position: relative;
+        flex-shrink: 0;
       }
       .rang-menu-btn {
         background: none;
@@ -2074,9 +2075,17 @@ class AufgabenScoreboardPanel extends HTMLElement {
         color: var(--primary-text-color);
       }
       .rang-aktionen-popup {
+        /* WICHTIG: bewusst relativ zur GESAMTEN Zeile (.rang-eintrag,
+           siehe position:relative oben) positioniert statt relativ zum
+           winzigen ⋮-Button-Wrapper - Letzteres führte in Kombination
+           mit dem umbrechenden Flex-Layout der Badges (flex-wrap) dazu,
+           dass das Popup weit links am Bildschirmrand statt beim Button
+           erschien. Die Zeile selbst hat eine stabile, volle Breite und
+           liefert damit einen zuverlässigen Bezugsrahmen.
+        */
         position: absolute;
         top: 100%;
-        right: 0;
+        right: 16px;
         z-index: 10;
         display: flex;
         flex-direction: column;
