@@ -350,7 +350,15 @@ async def _async_register_card_resource(hass: HomeAssistant) -> None:
         )
         return
 
-    if getattr(lovelace, "mode", None) != "storage":
+    # WICHTIG: Bestätigter Breaking Change in Home Assistant seit
+    # 2026.2 (Übergangsfrist bis 2026.8, inzwischen abgelaufen): Das
+    # Attribut heißt nicht mehr "mode", sondern "resource_mode". Ohne
+    # diesen Fallback würde getattr(lovelace, "mode", None) auf neueren
+    # HA-Versionen immer None liefern - die Integration würde dann
+    # fälschlich IMMER "YAML-Modus" annehmen und die automatische
+    # Registrierung überspringen, selbst im ganz normalen Storage-Modus.
+    lovelace_modus = getattr(lovelace, "resource_mode", None) or getattr(lovelace, "mode", None)
+    if lovelace_modus != "storage":
         _LOGGER.info(
             "Lovelace läuft im YAML-Modus - die Custom Card muss dort manuell als Ressource "
             "eingetragen werden (URL: %s/%s). Siehe README.",
