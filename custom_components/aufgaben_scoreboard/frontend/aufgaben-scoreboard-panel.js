@@ -56,6 +56,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // (siehe _render() - fällt automatisch auf "benutzer" zurück,
     // falls der aktive Tab für die aktuellen Rechte nicht existiert).
     this._aktiverTab = "benutzer";
+    // Merkt sich, für welchen Benutzer (falls überhaupt) das ⋮-Aktions-
+    // Menü in der Rangliste gerade offen ist (Zurücksetzen-Buttons) -
+    // null = keins offen. Immer nur eins gleichzeitig, hält die Zeilen
+    // im Normalfall kompakt.
+    this._offenesRangMenuUserId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -449,6 +454,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
                 const siege = b.zustand.attributes.siege || 0;
                 const punktekonto = b.zustand.attributes.punktekonto;
+                const menuOffen = this._offenesRangMenuUserId === userId;
                 return `
                 <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
                   <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
@@ -456,31 +462,42 @@ class AufgabenScoreboardPanel extends HTMLElement {
                     <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
                   </span>
                   <div class="rang-rechts">
-                    ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
-                    ${
-                      punktekonto !== undefined
-                        ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
-                            💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
-                          </span>`
-                        : ""
-                    }
-                    <span class="rang-punkte">${b.zustand.state} Pkt.</span>
-                    ${
-                      istAdmin
-                        ? `<button
-                            class="btn-secondary reset-punkte-btn"
-                            data-user-id="${userId}"
-                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                            title="Punktestand zurücksetzen"
-                          >Zurücksetzen</button>
-                          <button
-                            class="btn-secondary reset-siege-btn"
-                            data-user-id="${userId}"
-                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                            title="Sieg-Zähler zurücksetzen"
-                          >Siege zurücksetzen</button>`
-                        : ""
-                    }
+                    <div class="rang-badges">
+                      <span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>
+                      ${
+                        punktekonto !== undefined
+                          ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
+                              💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
+                            </span>`
+                          : ""
+                      }
+                      <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                      ${
+                        istAdmin
+                          ? `<div class="rang-menu-wrapper">
+                              <button class="rang-menu-btn" data-user-id="${userId}" title="Weitere Aktionen">⋮</button>
+                              ${
+                                menuOffen
+                                  ? `<div class="rang-aktionen rang-aktionen-popup">
+                                      <button
+                                        class="btn-secondary reset-punkte-btn"
+                                        data-user-id="${userId}"
+                                        data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                                        title="Punktestand zurücksetzen"
+                                      >Zurücksetzen</button>
+                                      <button
+                                        class="btn-secondary reset-siege-btn"
+                                        data-user-id="${userId}"
+                                        data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                                        title="Sieg-Zähler zurücksetzen"
+                                      >Siege zurücksetzen</button>
+                                    </div>`
+                                  : ""
+                              }
+                            </div>`
+                          : ""
+                      }
+                    </div>
                   </div>
                 </div>
                 ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
@@ -1487,6 +1504,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".rang-menu-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const userId = ev.target.getAttribute("data-user-id");
+        this._offenesRangMenuUserId = this._offenesRangMenuUserId === userId ? null : userId;
+        this._render();
+      });
+    });
+
     this.shadowRoot.querySelectorAll(".praemie-einloesen-btn").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         const rewardName = ev.target.getAttribute("data-reward-name");
@@ -1997,22 +2023,74 @@ class AufgabenScoreboardPanel extends HTMLElement {
         background: var(--card-background-color);
         border-radius: 12px;
         box-shadow: var(--ha-card-box-shadow, 0 1px 3px rgba(0,0,0,0.12));
-        overflow: hidden;
+        /* WICHTIG: kein overflow:hidden mehr - würde das absolut
+           positionierte ⋮-Aktionsmenü (siehe .rang-aktionen-popup)
+           an den Rändern der Liste abschneiden, v. a. bei der letzten
+           Zeile. Der kleine kosmetische Nachteil (eckige statt
+           abgerundete Ecken bei einer eingefärbten "ich"-Zeile ganz
+           oben/unten) wiegt das nicht auf.
+        */
       }
       .rang-eintrag {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 10px;
         padding: 12px 16px;
         border-bottom: 1px solid var(--divider-color, #eee);
         color: var(--primary-text-color);
       }
       .rang-eintrag:last-child { border-bottom: none; }
+      .rang-eintrag:first-child { border-radius: 12px 12px 0 0; }
+      .rang-eintrag:last-child { border-radius: 0 0 12px 12px; }
+      .rang-eintrag:only-child { border-radius: 12px; }
       .rang-eintrag.ich { background: rgba(var(--rgb-primary-color, 3,169,244), 0.08); font-weight: 600; }
       .rang-rechts {
         display: flex;
         align-items: center;
         gap: 10px;
+      }
+      .rang-badges {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .rang-menu-wrapper {
+        position: relative;
+      }
+      .rang-menu-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 1.1em;
+        line-height: 1;
+        padding: 2px 6px;
+        color: var(--secondary-text-color);
+      }
+      .rang-menu-btn:hover {
+        color: var(--primary-text-color);
+      }
+      .rang-aktionen-popup {
+        position: absolute;
+        top: 100%;
+        right: 0;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 170px;
+        margin-top: 4px;
+        padding: 8px;
+        background: var(--card-background-color);
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 8px;
+        box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0,0,0,0.25));
+      }
+      .rang-aktionen-popup button {
+        width: 100%;
       }
       .rang-punkte { color: var(--primary-color); font-weight: 700; }
       .reset-punkte-btn,
