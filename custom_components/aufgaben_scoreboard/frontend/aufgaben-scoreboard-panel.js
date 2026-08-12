@@ -1224,11 +1224,44 @@ class AufgabenScoreboardPanel extends HTMLElement {
             <fieldset class="trigger-feld">
               <legend>Automatische Anlage per Entität (optional)</legend>
               <div class="ha-selector-slot" data-feld="trigger_entity_id"></div>
+              <div class="ha-selector-slot" data-feld="trigger_from_state"></div>
               <div class="ha-selector-slot" data-feld="trigger_state"></div>
+              <label>
+                Wert über (optional)
+                <input
+                  type="number"
+                  step="any"
+                  name="trigger_above"
+                  placeholder="z. B. 25"
+                  value="${
+                    bearbeiteteVorlage && bearbeiteteVorlage.trigger_above !== null && bearbeiteteVorlage.trigger_above !== undefined
+                      ? bearbeiteteVorlage.trigger_above
+                      : ""
+                  }"
+                />
+              </label>
+              <label>
+                Wert unter (optional)
+                <input
+                  type="number"
+                  step="any"
+                  name="trigger_below"
+                  placeholder="z. B. 10"
+                  value="${
+                    bearbeiteteVorlage && bearbeiteteVorlage.trigger_below !== null && bearbeiteteVorlage.trigger_below !== undefined
+                      ? bearbeiteteVorlage.trigger_below
+                      : ""
+                  }"
+                />
+              </label>
               <div class="hinweis-klein">
-                Sobald die gewählte Entität den Ziel-Zustand erreicht, wird
-                automatisch eine Aufgabe aus dieser Vorlage angelegt - sofern
-                nicht bereits eine offene Aufgabe daraus existiert.
+                Wie beim Zustands-Trigger im Automationen-Editor: "Von"
+                und "Zu" prüfen den exakten Zustandstext (beide optional,
+                "Von" nur sinnvoll zusammen mit "Zu"). "Über"/"Unter"
+                vergleichen den Zustand als Zahl und sind unabhängig
+                davon nutzbar - auch gleichzeitig, für einen Wertebereich.
+                Automatische Anlage nur, sofern nicht bereits eine offene
+                Aufgabe aus dieser Vorlage existiert.
               </div>
             </fieldset>
             <fieldset class="zeitplan-feld">
@@ -1345,8 +1378,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
    */
   _haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand) {
     const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
+    const fromStateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_from_state"]');
     const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
-    if (!entitySlot || !stateSlot) return;
+    if (!entitySlot || !fromStateSlot || !stateSlot) return;
 
     const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
     const bearbeiteteVorlage = this._bearbeiteVorlageId
@@ -1357,6 +1391,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Daten) - das ist der richtige Ausgangspunkt beim allerersten Öffnen
     // des Formulars.
     let entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
+    let fromStateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_from_state || "" : "";
     let stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
 
     // WICHTIG: Ist bereits ein Formular-Zustand für GENAU dieses Formular
@@ -1373,6 +1408,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
       if ("trigger_entity_id" in gesicherterFormularZustand.werte) {
         entityWert = gesicherterFormularZustand.werte.trigger_entity_id || "";
       }
+      if ("trigger_from_state" in gesicherterFormularZustand.werte) {
+        fromStateWert = gesicherterFormularZustand.werte.trigger_from_state || "";
+      }
       if ("trigger_state" in gesicherterFormularZustand.werte) {
         stateWert = gesicherterFormularZustand.werte.trigger_state || "";
       }
@@ -1384,8 +1422,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
         <label>Auslösende Entität (Entity-ID)
           <input type="text" data-feld-name="trigger_entity_id" placeholder="z. B. binary_sensor.tuer_garage" value="${this._escape(entityWert)}" />
         </label>`;
+      fromStateSlot.innerHTML = `
+        <label>Ausgangszustand ("von")
+          <input type="text" data-feld-name="trigger_from_state" placeholder="z. B. off" value="${this._escape(fromStateWert)}" />
+        </label>`;
       stateSlot.innerHTML = `
-        <label>Ziel-Zustand
+        <label>Ziel-Zustand ("zu")
           <input type="text" data-feld-name="trigger_state" placeholder="z. B. on" value="${this._escape(stateWert)}" />
         </label>`;
       return;
@@ -1410,17 +1452,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
       // Ohne dieses explizite Zurückschreiben auf .value würde die
       // Auswahl beim nächsten Render (siehe unten) wieder verloren gehen.
       entitySelector.value = ev.detail.value;
-      // Neu rendern, damit der Ziel-Zustand-Selector direkt im Anschluss
-      // mit der NEU gewählten Entität aufgebaut wird und deren bekannte
-      // Zustände vorschlägt (genau wie im Automationen-Editor). Bereits
-      // eingegebene Formularwerte bleiben durch
+      // Neu rendern, damit die Zustands-Selectoren direkt im Anschluss
+      // mit der NEU gewählten Entität aufgebaut werden und deren
+      // bekannte Zustände vorschlagen (genau wie im Automationen-
+      // Editor). Bereits eingegebene Formularwerte bleiben durch
       // _sichereFormularZustand()/_stelleFormularZustandWieder() erhalten.
       this._render();
     });
 
+    const fromStateSelector = document.createElement("ha-selector");
+    fromStateSelector.hass = this._hass;
+    fromStateSelector.label = 'Ausgangszustand ("von")';
+    fromStateSelector.selector = { state: { entity_id: entityWert || undefined } };
+    fromStateSelector.value = fromStateWert || undefined;
+    fromStateSelector.required = false;
+    fromStateSelector.dataset.feldName = "trigger_from_state";
+    fromStateSelector.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      fromStateSelector.value = ev.detail.value;
+    });
+
     const stateSelector = document.createElement("ha-selector");
     stateSelector.hass = this._hass;
-    stateSelector.label = "Ziel-Zustand";
+    stateSelector.label = 'Ziel-Zustand ("zu")';
     stateSelector.selector = { state: { entity_id: entityWert || undefined } };
     stateSelector.value = stateWert || undefined;
     stateSelector.required = false;
@@ -1436,21 +1490,27 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     entitySlot.innerHTML = "";
     entitySlot.appendChild(entitySelector);
+    fromStateSlot.innerHTML = "";
+    fromStateSlot.appendChild(fromStateSelector);
     stateSlot.innerHTML = "";
     stateSlot.appendChild(stateSelector);
 
-    // Zusätzlich zu einem eventuellen eingebauten Lösch-Icon des
-    // Selectors: ein eigener, garantiert sichtbarer Button, der BEIDE
-    // Trigger-Felder auf einen Klick leert. So ist das Entfernen nicht
+    // Zusätzlich zu einem eventuellen eingebauten Lösch-Icon der
+    // Selectoren: ein eigener, garantiert sichtbarer Button, der ALLE
+    // DREI Trigger-Zustandsfelder auf einen Klick leert (Über/Unter
+    // bleiben davon unberührt, da sie unabhängig nutzbar sind - dafür
+    // gibt es keinen eigenen Entfernen-Button, ein leeres Zahlenfeld
+    // ist selbsterklärend "nicht gesetzt"). So ist das Entfernen nicht
     // von einer UI-Eigenheit des ha-selector abhängig, die sich zwischen
     // Home-Assistant-Versionen unterscheiden kann.
-    if (entityWert || stateWert) {
+    if (entityWert || fromStateWert || stateWert) {
       const entfernenBtn = document.createElement("button");
       entfernenBtn.type = "button";
       entfernenBtn.className = "btn-secondary trigger-entfernen-btn";
       entfernenBtn.textContent = "Trigger entfernen";
       entfernenBtn.addEventListener("click", () => {
         entitySelector.value = undefined;
+        fromStateSelector.value = undefined;
         stateSelector.value = undefined;
         this._render();
       });
@@ -1834,9 +1894,18 @@ class AufgabenScoreboardPanel extends HTMLElement {
     );
     const multiscoringFeld = formular.querySelector('input[name="multiscoring"]');
     const entityFeld = formular.querySelector('[data-feld-name="trigger_entity_id"]');
+    const fromStateFeld = formular.querySelector('[data-feld-name="trigger_from_state"]');
     const stateFeld = formular.querySelector('[data-feld-name="trigger_state"]');
     const triggerEntityId = entityFeld ? entityFeld.value || "" : "";
+    const triggerFromState = fromStateFeld ? fromStateFeld.value || "" : "";
     const triggerState = stateFeld ? stateFeld.value || "" : "";
+    // trigger_above/trigger_below sind normale, benannte <input>-Felder
+    // (kein ha-selector) - roher String-Wert aus FormData, damit sich
+    // "" (leer/entfernt) von "0" (gültiger Zahlenwert 0) unterscheiden
+    // lässt; die Umwandlung in eine Zahl übernimmt die Service-Schema-
+    // Validierung serverseitig.
+    const triggerAbove = daten.get("trigger_above") || "";
+    const triggerBelow = daten.get("trigger_below") || "";
 
     // Zeitplan: die UI-Auswahl (schedule_type_ui, 4 Optionen) auf die
     // beiden tatsächlichen Backend-Felder abbilden - siehe Kommentar bei
@@ -1874,17 +1943,25 @@ class AufgabenScoreboardPanel extends HTMLElement {
       // Beim Bearbeiten IMMER mitsenden - ein leerer Wert entfernt den
       // jeweiligen Trigger dabei bewusst (siehe async_update_template).
       formData.trigger_entity_id = triggerEntityId;
+      formData.trigger_from_state = triggerFromState;
       formData.trigger_state = triggerState;
+      formData.trigger_above = triggerAbove;
+      formData.trigger_below = triggerBelow;
       formData.schedule_type = scheduleType;
       if (scheduleType) formData.schedule_interval = scheduleInterval;
       if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
       this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
     } else {
       // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
-      // leerer String ist kein gültiger Zeitplan-Typ und würde die
-      // Service-Validierung von add_template fehlschlagen lassen.
+      // leerer String ist kein gültiger Zeitplan-Typ/Zahlenwert und
+      // würde die Service-Validierung von add_template fehlschlagen
+      // lassen (dort ist "leer/entfernt" als Konzept nicht vorgesehen -
+      // es gibt ja noch nichts zu entfernen).
       if (triggerEntityId) formData.trigger_entity_id = triggerEntityId;
+      if (triggerFromState) formData.trigger_from_state = triggerFromState;
       if (triggerState) formData.trigger_state = triggerState;
+      if (triggerAbove) formData.trigger_above = triggerAbove;
+      if (triggerBelow) formData.trigger_below = triggerBelow;
       if (scheduleType) {
         formData.schedule_type = scheduleType;
         formData.schedule_interval = scheduleInterval;
