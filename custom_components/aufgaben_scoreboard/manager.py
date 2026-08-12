@@ -121,9 +121,15 @@ class AufgabenScoreboardManager:
                     # zugewiesenem Benutzer eine eigene, unabhängig
                     # erledigbare Aufgabe (statt einer gemeinsamen)
                 "trigger_entity_id": "<entity_id>" oder None,  # optional:
-                    # automatische Anlage, sobald diese Entität den unten
-                    # angegebenen Zustand erreicht
-                "trigger_state": "<zielzustand>" oder None,
+                    # automatische Anlage per Entitäts-Trigger, analog
+                    # zum Zustands-Trigger im Automationen-Editor
+                "trigger_state": "<zielzustand>" oder None,  # "zu"
+                "trigger_from_state": "<ausgangszustand>" oder None,  # "von" -
+                    # zusätzliche Bedingung zu trigger_state, optional
+                "trigger_above": 25.0 oder None,  # "über" - numerischer
+                    # Schwellwert, unabhängig von trigger_state nutzbar
+                "trigger_below": 10.0 oder None,  # "unter" - kann
+                    # gleichzeitig mit trigger_above gesetzt sein
                 "schedule_type": "days" | "weekly" | None,  # optional:
                     # automatische Anlage nach Zeitplan (zusätzlich und
                     # unabhängig vom Entitäts-Trigger nutzbar)
@@ -285,6 +291,9 @@ class AufgabenScoreboardManager:
             vorlage.setdefault("schedule_weekday", None)
             vorlage.setdefault("schedule_anchor", None)
             vorlage.setdefault("schedule_last_triggered", None)
+            vorlage.setdefault("trigger_from_state", None)
+            vorlage.setdefault("trigger_above", None)
+            vorlage.setdefault("trigger_below", None)
 
         # Abwärtskompatibilität: Redemption-Einträge aus Versionen vor
         # einer künftigen Feld-Erweiterung erhalten hier ebenfalls
@@ -1117,6 +1126,9 @@ class AufgabenScoreboardManager:
         multiscoring: bool = False,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        trigger_from_state: str | None = None,
+        trigger_above: float | None = None,
+        trigger_below: float | None = None,
         schedule_type: str | None = None,
         schedule_interval: int | None = None,
         schedule_weekday: int | None = None,
@@ -1127,8 +1139,23 @@ class AufgabenScoreboardManager:
         :param multiscoring: Bei True entsteht beim Anlegen aus dieser
             Vorlage PRO zugewiesenem Benutzer eine eigene, unabhängig
             erledigbare Aufgabe statt einer gemeinsamen.
-        :param trigger_entity_id: Optionale Entität, bei deren Erreichen
-            von trigger_state automatisch eine Aufgabe erzeugt wird.
+        :param trigger_entity_id: Optionale Entität für den
+            Entitäts-Trigger. Mindestens eine der Bedingungen
+            trigger_state / trigger_above / trigger_below muss zusätzlich
+            gesetzt sein, damit der Trigger tatsächlich aktiv wird.
+        :param trigger_state: Ziel-Zustand ("zu"), analog zum
+            Automationen-Zustands-Trigger.
+        :param trigger_from_state: Optionaler Ausgangszustand ("von") -
+            zusätzliche Bedingung zu trigger_state, wird nur beim Wechsel
+            AUS GENAU DIESEM Zustand ausgelöst statt bei jedem Erreichen
+            von trigger_state.
+        :param trigger_above: Optionale numerische Schwelle ("über") -
+            löst aus, sobald der (als Zahl interpretierte) Zustand diesen
+            Wert von unten nach oben überschreitet.
+        :param trigger_below: Optionale numerische Schwelle ("unter") -
+            löst aus, sobald der Zustand diesen Wert von oben nach unten
+            unterschreitet. trigger_above und trigger_below können
+            gleichzeitig gesetzt sein (z. B. "außerhalb eines Bereichs").
         :param schedule_type: Optionaler Zeitplan-Trigger ("days" oder
             "weekly") - unabhängig vom Entitäts-Trigger nutzbar, auch
             gleichzeitig mit ihm.
@@ -1149,6 +1176,9 @@ class AufgabenScoreboardManager:
             "multiscoring": bool(multiscoring),
             "trigger_entity_id": trigger_entity_id or None,
             "trigger_state": trigger_state or None,
+            "trigger_from_state": trigger_from_state or None,
+            "trigger_above": float(trigger_above) if trigger_above is not None else None,
+            "trigger_below": float(trigger_below) if trigger_below is not None else None,
             "schedule_type": schedule_type,
             "schedule_interval": (int(schedule_interval) if schedule_interval else 1) if schedule_type else None,
             "schedule_weekday": (int(schedule_weekday) if schedule_weekday is not None else None)
@@ -1181,6 +1211,9 @@ class AufgabenScoreboardManager:
         multiscoring: bool | None = None,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        trigger_from_state: str | None = None,
+        trigger_above: float | str | None = None,
+        trigger_below: float | str | None = None,
         schedule_type: str | None = None,
         schedule_interval: int | None = None,
         schedule_weekday: int | None = None,
@@ -1188,9 +1221,13 @@ class AufgabenScoreboardManager:
         """
         Bearbeitet eine bestehende Standardaufgabe nachträglich. Nur die
         tatsächlich übergebenen Felder werden geändert (gleiches Muster
-        wie async_update_task). Für trigger_entity_id/trigger_state sowie
-        schedule_type gilt: ein LEERER String entfernt den jeweiligen
-        Trigger bewusst, KEINE Angabe (None) lässt ihn unangetastet.
+        wie async_update_task). Für trigger_entity_id/trigger_state/
+        trigger_from_state sowie schedule_type gilt: ein LEERER String
+        entfernt den jeweiligen Trigger bewusst, KEINE Angabe (None)
+        lässt ihn unangetastet. Für trigger_above/trigger_below gilt
+        dasselbe - hier ist zusätzlich zu float auch der leere String ""
+        als bewusstes "entfernen" zulässig (siehe SCHEMA_UPDATE_TEMPLATE
+        in __init__.py).
 
         :return: True bei Erfolg, False falls die Vorlage nicht existiert.
         """
@@ -1213,6 +1250,12 @@ class AufgabenScoreboardManager:
             vorlage["trigger_entity_id"] = trigger_entity_id or None
         if trigger_state is not None:
             vorlage["trigger_state"] = trigger_state or None
+        if trigger_from_state is not None:
+            vorlage["trigger_from_state"] = trigger_from_state or None
+        if trigger_above is not None:
+            vorlage["trigger_above"] = None if trigger_above == "" else float(trigger_above)
+        if trigger_below is not None:
+            vorlage["trigger_below"] = None if trigger_below == "" else float(trigger_below)
 
         if schedule_type is not None:
             if schedule_type == "":
@@ -1342,8 +1385,12 @@ class AufgabenScoreboardManager:
         """
         Gleicht die abonnierten Entitäts-Trigger mit dem aktuellen Stand
         der Standardaufgaben ab: alle bisherigen Listener werden
-        abgemeldet und aus den aktuellen Vorlagen (die einen
-        trigger_entity_id + trigger_state gesetzt haben) neu abonniert.
+        abgemeldet und aus den aktuellen Vorlagen neu abonniert. Ein
+        Listener wird nur registriert, wenn trigger_entity_id gesetzt
+        ist UND mindestens eine der Bedingungen trigger_state /
+        trigger_above / trigger_below gesetzt ist (trigger_from_state
+        allein reicht nicht - "von" ist nur eine ZUSATZ-Bedingung zu
+        "zu", ohne "zu" gäbe es kein definiertes Ziel).
 
         Wird aufgerufen: einmalig beim Start der Integration (aus
         __init__.py, nach async_load()) sowie nach jedem
@@ -1359,39 +1406,104 @@ class AufgabenScoreboardManager:
         for vorlage in self._data["templates"].values():
             entity_id = vorlage.get("trigger_entity_id")
             ziel_zustand = vorlage.get("trigger_state")
-            if not entity_id or not ziel_zustand:
+            ueber = vorlage.get("trigger_above")
+            unter = vorlage.get("trigger_below")
+            if not entity_id or not (ziel_zustand or ueber is not None or unter is not None):
                 continue
             template_id = vorlage["id"]
             self._trigger_unsub[template_id] = async_track_state_change_event(
                 self.hass,
                 [entity_id],
-                self._erzeuge_trigger_callback(template_id, ziel_zustand),
+                self._erzeuge_trigger_callback(
+                    template_id,
+                    ziel_zustand,
+                    vorlage.get("trigger_from_state"),
+                    ueber,
+                    unter,
+                ),
             )
 
-    def _erzeuge_trigger_callback(self, template_id: str, ziel_zustand: str):
+    def _erzeuge_trigger_callback(
+        self,
+        template_id: str,
+        ziel_zustand: str | None,
+        von_zustand: str | None,
+        ueber: float | None,
+        unter: float | None,
+    ):
         """
         Baut den Event-Callback für einen einzelnen Entitäts-Trigger.
         Eigene Funktion (statt Inline-Closure in sync_trigger_listeners),
-        damit template_id/ziel_zustand pro Vorlage korrekt "eingefangen"
-        werden und nicht durch die Schleifenvariable überschrieben
-        werden können.
+        damit die Bedingungen pro Vorlage korrekt "eingefangen" werden
+        und nicht durch die Schleifenvariable überschrieben werden
+        können. Bildet dieselben Bedingungsarten wie der
+        Zustands-Trigger im Automationen-Editor nach: "von" (optional),
+        "zu" (Ziel-Zustand als exakter String) sowie "über"/"unter"
+        (numerischer Schwellwert, unabhängig vom Zustands-Vergleich
+        nutzbar, auch kombinierbar).
         """
 
         @callback
         def _callback(event) -> None:
             neuer_zustand = event.data.get("new_state")
             alter_zustand = event.data.get("old_state")
-            if neuer_zustand is None or neuer_zustand.state != ziel_zustand:
+            if neuer_zustand is None:
                 return
-            # Nur bei einer echten FLANKE auslösen (Übergang IN den
-            # Zielzustand hinein) - async_track_state_change_event feuert
-            # bei JEDER Zustandsänderung der Entität, auch bei reinen
-            # Attribut-Änderungen während der Zustand bereits dem
-            # Zielwert entspricht. Ohne diese Prüfung würde z. B. jede
-            # Attribut-Aktualisierung eines bereits "on" stehenden
-            # Sensors erneut eine Aufgabe erzeugen wollen.
-            if alter_zustand is not None and alter_zustand.state == ziel_zustand:
-                return
+
+            # "von" prüfen (falls gesetzt): der VORHERIGE Zustand muss
+            # exakt diesem Wert entsprochen haben.
+            if von_zustand:
+                if alter_zustand is None or alter_zustand.state != von_zustand:
+                    return
+
+            # "zu" prüfen (falls gesetzt): exakter Ziel-Zustand, nur bei
+            # der FLANKE auslösen (Übergang IN den Zustand hinein) -
+            # async_track_state_change_event feuert bei JEDER
+            # Zustandsänderung, auch bei reinen Attribut-Änderungen
+            # während der Zustand bereits dem Ziel entspricht. Ohne
+            # diese Prüfung würde z. B. jede Attribut-Aktualisierung
+            # eines bereits "on" stehenden Sensors erneut auslösen.
+            if ziel_zustand:
+                if neuer_zustand.state != ziel_zustand:
+                    return
+                if alter_zustand is not None and alter_zustand.state == ziel_zustand:
+                    return
+
+            # "über"/"unter" prüfen (falls gesetzt): numerischer
+            # Vergleich, ebenfalls nur bei der FLANKE auslösen (Wert
+            # erfüllt jetzt ALLE gesetzten Schwellwert-Bedingungen
+            # zusammen, hat das vorher NICHT getan). Wichtig: Bei
+            # gleichzeitig gesetztem "über" UND "unter" (= Bereich, z. B.
+            # 10 < Wert < 30) muss die Flanke anhand der GESAMTEN
+            # Bedingung geprüft werden, nicht pro Feld einzeln - sonst
+            # würde z. B. ein alter Wert, der zwar schon unter der
+            # oberen Schwelle lag, aber die untere Schwelle noch nicht
+            # erreicht hatte, fälschlich als "war schon im Zielbereich"
+            # gewertet und die Flanke verpasst.
+            if ueber is not None or unter is not None:
+
+                def _erfuellt_schwellwerte(wert: float) -> bool:
+                    if ueber is not None and not (wert > ueber):
+                        return False
+                    if unter is not None and not (wert < unter):
+                        return False
+                    return True
+
+                try:
+                    neuer_wert = float(neuer_zustand.state)
+                except (TypeError, ValueError):
+                    return
+                if not _erfuellt_schwellwerte(neuer_wert):
+                    return
+
+                if alter_zustand is not None:
+                    try:
+                        alter_wert = float(alter_zustand.state)
+                    except (TypeError, ValueError):
+                        alter_wert = None
+                    if alter_wert is not None and _erfuellt_schwellwerte(alter_wert):
+                        return
+
             self.hass.async_create_task(self._async_trigger_ausloesen(template_id))
 
         return _callback

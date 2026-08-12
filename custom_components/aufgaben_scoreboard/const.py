@@ -174,6 +174,9 @@ ATTR_TEMPLATE_ID = "template_id"
 ATTR_MULTISCORING = "multiscoring"
 ATTR_TRIGGER_ENTITY_ID = "trigger_entity_id"
 ATTR_TRIGGER_STATE = "trigger_state"
+ATTR_TRIGGER_FROM_STATE = "trigger_from_state"
+ATTR_TRIGGER_ABOVE = "trigger_above"
+ATTR_TRIGGER_BELOW = "trigger_below"
 
 # Zeitplan-Trigger für Standardaufgaben (zusätzlich/alternativ zum
 # Entitäts-Trigger): automatische Anlage nach Tages- oder

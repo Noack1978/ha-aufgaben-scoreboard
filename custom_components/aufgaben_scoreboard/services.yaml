@@ -479,11 +479,41 @@ add_template:
       selector:
         entity:
     trigger_state:
-      name: Ziel-Zustand
+      name: Ziel-Zustand ("zu")
       description: Der Zustandswert der auslösenden Entität, bei dessen Erreichen automatisch eine Aufgabe angelegt wird (z. B. "on").
       required: false
       selector:
         text:
+    trigger_from_state:
+      name: Ausgangszustand ("von")
+      description: >-
+        Optional, nur zusammen mit trigger_state sinnvoll. Löst nur aus,
+        wenn die Entität AUS GENAU DIESEM Zustand in den Ziel-Zustand
+        wechselt, statt bei jedem Erreichen des Ziel-Zustands.
+      required: false
+      selector:
+        text:
+    trigger_above:
+      name: Wert über
+      description: >-
+        Optional, unabhängig von trigger_state nutzbar (auch
+        gleichzeitig mit trigger_below für einen Wertebereich). Löst
+        aus, sobald der (als Zahl interpretierte) Zustand diesen Wert
+        von unten nach oben überschreitet.
+      required: false
+      selector:
+        number:
+          mode: box
+    trigger_below:
+      name: Wert unter
+      description: >-
+        Optional, unabhängig von trigger_state nutzbar. Löst aus,
+        sobald der Zustand diesen Wert von oben nach unten
+        unterschreitet.
+      required: false
+      selector:
+        number:
+          mode: box
     schedule_type:
       name: Zeitplan-Art
       description: >-
@@ -584,10 +614,29 @@ update_template:
       selector:
         entity:
     trigger_state:
-      name: Ziel-Zustand
+      name: Ziel-Zustand ("zu")
       required: false
       selector:
         text:
+    trigger_from_state:
+      name: Ausgangszustand ("von")
+      required: false
+      selector:
+        text:
+    trigger_above:
+      name: Wert über
+      description: Ein leerer Wert entfernt diese Bedingung bewusst.
+      required: false
+      selector:
+        number:
+          mode: box
+    trigger_below:
+      name: Wert unter
+      description: Ein leerer Wert entfernt diese Bedingung bewusst.
+      required: false
+      selector:
+        number:
+          mode: box
     schedule_type:
       name: Zeitplan-Art
       description: Ein LEERER Wert entfernt den Zeitplan bewusst.
