@@ -152,12 +152,20 @@ einmalig fest; konkrete, erledigbare Aufgaben lassen sich daraus
 beliebig oft erzeugen:
 
 - **Manuell**: Button „Jetzt anlegen“ bei der jeweiligen Standardaufgabe.
-- **Automatisch per Entitäts-Trigger**: über eine optionale Entität +
-  Ziel-Zustand direkt im Formular (mit derselben Entitäts-/
-  Zustands-Auswahl wie im Automationen-Editor). Sobald die gewählte
-  Entität den Zielwert erreicht, wird automatisch eine Aufgabe angelegt
-  – aber nur, wenn nicht bereits eine offene Aufgabe aus derselben
-  Vorlage existiert (Duplikat-Schutz).
+- **Automatisch per Entitäts-Trigger**: über eine optionale Entität
+  direkt im Formular, mit denselben Bedingungsarten wie beim
+  Zustands-Trigger im Automationen-Editor (inkl. derselben Entitäts-/
+  Zustands-Auswahl-Komponente):
+  - **Von / Zu**: exakter Zustandstext, beide optional. „Zu“ allein
+    löst bei jedem Erreichen dieses Zustands aus; zusätzlich „Von“
+    schränkt das auf den Übergang aus GENAU diesem Ausgangszustand ein.
+  - **Über / Unter**: numerischer Schwellwert, unabhängig von Von/Zu
+    nutzbar – auch gleichzeitig, für einen Wertebereich (z. B. „über 10
+    und unter 30“).
+  
+  Sobald die Bedingung erfüllt ist, wird automatisch eine Aufgabe
+  angelegt – aber nur, wenn nicht bereits eine offene Aufgabe aus
+  derselben Vorlage existiert (Duplikat-Schutz).
 - **Automatisch per Zeitplan**: unabhängig vom Entitäts-Trigger (auch
   gleichzeitig mit ihm nutzbar) lässt sich eine Standardaufgabe so
   konfigurieren, dass sie
