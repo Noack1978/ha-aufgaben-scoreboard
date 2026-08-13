@@ -131,6 +131,64 @@ und nur unter den letzten **20 Erledigungen** desselben Benutzers. Ältere
 Einträge werden im Verlauf weiterhin angezeigt, aber ohne
 „Rückgängig"-Button.
 
+#### Admin per Automation benachrichtigen, wenn eine Freigabe wartet
+
+Für beide Freigabe-Arten (Aufgaben und Prämien-Einlösungen) werden
+eigene Events gefeuert, sobald eine Anfrage entsteht:
+`aufgaben_scoreboard_task_completion_requested` bzw.
+`aufgaben_scoreboard_reward_redemption_requested`. Damit lässt sich
+schon heute eine Benachrichtigungs-Automation bauen:
+
+```yaml
+alias: Aufgaben-Punktesystem – Freigabe erforderlich
+description: Benachrichtigt den Admin, sobald eine Aufgabe oder Prämie auf Freigabe wartet.
+triggers:
+  - trigger: event
+    event_type: aufgaben_scoreboard_task_completion_requested
+    id: aufgabe
+  - trigger: event
+    event_type: aufgaben_scoreboard_reward_redemption_requested
+    id: praemie
+condition: []
+actions:
+  - variables:
+      benutzer_name: >-
+        {% set uid = trigger.event.data.user_id %}
+        {% set sensor = states.sensor | selectattr('attributes.user_id', 'defined') | selectattr('attributes.user_id', 'eq', uid) | first %}
+        {{ sensor.name if sensor else uid }}
+      titel: >-
+        {% if trigger.id == 'aufgabe' %}
+          Aufgabe wartet auf Freigabe
+        {% else %}
+          Prämie wartet auf Freigabe
+        {% endif %}
+      nachricht: >-
+        {% if trigger.id == 'aufgabe' %}
+          {% set tid = trigger.event.data.task_id %}
+          {% set aufgabe = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'wartende_aufgaben') | selectattr('id', 'eq', tid) | first %}
+          {{ benutzer_name }} hat "{{ aufgabe.name if aufgabe else 'eine Aufgabe' }}" als erledigt gemeldet.
+        {% else %}
+          {% set rid = trigger.event.data.reward_id %}
+          {% set eintrag = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'wartende_praemien') | selectattr('reward_id', 'eq', rid) | selectattr('user_id', 'eq', trigger.event.data.user_id) | first %}
+          {{ benutzer_name }} möchte "{{ eintrag.reward_name if eintrag else 'eine Prämie' }}" einlösen.
+        {% endif %}
+  - action: notify.send_message
+    target:
+      entity_id: notify.dein_handy
+    data:
+      title: "{{ titel }}"
+      message: "{{ nachricht }}"
+mode: queued
+max: 10
+```
+
+`notify.dein_handy` durch die eigene Notify-Entität ersetzen (z. B. die
+der Companion App – `notify.send_message` mit Entity-Target ist die
+aktuelle Schreibweise, nicht mehr `notify.mobile_app_*` als
+Service-Name). Nutzt du kein Prämien-System, lassen sich der zweite
+Trigger-Block (`id: praemie`) und der zugehörige `{% else %}`-Zweig
+weglassen.
+
 ### Berücksichtigte Benutzer konfigurieren
 
 Standardmäßig bekommt jeder aktive, nicht-technische Home-Assistant-
