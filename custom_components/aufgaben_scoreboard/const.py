@@ -88,6 +88,18 @@ EVENT_REWARD_REDEMPTION_REQUESTED = f"{DOMAIN}_reward_redemption_requested"
 EVENT_REWARD_REDEMPTION_APPROVED = f"{DOMAIN}_reward_redemption_approved"
 EVENT_REWARD_REDEMPTION_REJECTED = f"{DOMAIN}_reward_redemption_rejected"
 
+# Fälligkeit / Erinnerung: EVENT_TASK_OVERDUE feuert einmalig, sobald
+# eine Aufgabe ihr Fälligkeitsdatum erreicht/überschreitet.
+# EVENT_TASK_REMINDER feuert einmalig, sobald eine Aufgabe seit der
+# konfigurierten Anzahl Tage ununterbrochen offen ist - unabhängig von
+# einer eventuell zusätzlich gesetzten Fälligkeit, beide können
+# gleichzeitig an derselben Aufgabe konfiguriert sein.
+EVENT_TASK_OVERDUE = f"{DOMAIN}_task_overdue"
+EVENT_TASK_REMINDER = f"{DOMAIN}_task_reminder"
+
+# Manueller Punktabzug durch einen Administrator, unabhängig von Aufgaben.
+EVENT_POINTS_DEDUCTED = f"{DOMAIN}_points_deducted"
+
 # -----------------------------------------------------------------------
 # Service-Namen (aufrufbar z. B. in Automationen/Skripten sowie über das
 # mitgelieferte Sidebar-Panel).
@@ -102,6 +114,7 @@ SERVICE_COMPLETE_TASK = "complete_task"
 SERVICE_APPROVE_TASK = "approve_task"
 SERVICE_REJECT_TASK = "reject_task"
 SERVICE_UNDO_COMPLETION = "undo_completion"
+SERVICE_DEDUCT_POINTS = "deduct_points"
 SERVICE_RESET_SCORE = "reset_score"
 
 # Standardaufgaben (Vorlagen): wiederverwendbare Aufgaben-Definitionen,
@@ -136,6 +149,9 @@ ATTR_SCORE = "score"
 ATTR_USER_ID = "user_id"
 ATTR_ASSIGNED_TO = "assigned_to"
 ATTR_COMPLETION_ID = "completion_id"
+ATTR_DUE_DATE = "due_date"
+ATTR_AMOUNT = "amount"
+ATTR_REASON = "reason"
 
 # Prämien-System
 ATTR_REWARD_ID = "reward_id"
@@ -177,6 +193,14 @@ ATTR_TRIGGER_STATE = "trigger_state"
 ATTR_TRIGGER_FROM_STATE = "trigger_from_state"
 ATTR_TRIGGER_ABOVE = "trigger_above"
 ATTR_TRIGGER_BELOW = "trigger_below"
+
+# Fälligkeit / Erinnerung
+ATTR_DUE_IN_DAYS = "due_in_days"
+ATTR_REMINDER_DAYS = "reminder_days"
+
+# Punktabzug
+ATTR_AMOUNT = "amount"
+ATTR_REASON = "reason"
 
 # Zeitplan-Trigger für Standardaufgaben (zusätzlich/alternativ zum
 # Entitäts-Trigger): automatische Anlage nach Tages- oder

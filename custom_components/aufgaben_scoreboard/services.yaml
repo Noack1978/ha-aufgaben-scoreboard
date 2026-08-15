@@ -40,6 +40,34 @@ add_task:
       selector:
         text:
           multiple: true
+    due_in_days:
+      name: Fällig in X Tagen
+      description: >-
+        Optional. Die Aufgabe gilt ab diesem Datum (taggenau, ab heute
+        gerechnet) als überfällig, sofern sie bis dahin nicht erledigt
+        wurde - im Panel farblich hervorgehoben, zusätzlich löst das
+        Erreichen einmalig das Event aufgaben_scoreboard_task_overdue aus.
+      required: false
+      example: 3
+      selector:
+        number:
+          min: 0
+          max: 3650
+          mode: box
+    reminder_days:
+      name: Erinnerung nach X Tagen offen
+      description: >-
+        Optional, unabhängig von "Fällig in X Tagen" nutzbar (auch
+        gleichzeitig) - löst einmalig das Event
+        aufgaben_scoreboard_task_reminder aus, sobald die Aufgabe seit
+        dieser Anzahl Tage ununterbrochen offen ist.
+      required: false
+      example: 2
+      selector:
+        number:
+          min: 1
+          max: 3650
+          mode: box
 
 update_task:
   name: Aufgabe bearbeiten
@@ -88,6 +116,24 @@ update_task:
       selector:
         text:
           multiple: true
+    due_in_days:
+      name: Fällig in X Tagen
+      description: Ein leerer Wert entfernt die Fälligkeit bewusst.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 3650
+          mode: box
+    reminder_days:
+      name: Erinnerung nach X Tagen offen
+      description: Ein leerer Wert entfernt die Erinnerung bewusst.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 3650
+          mode: box
 
 remove_task:
   name: Aufgabe löschen
@@ -211,6 +257,39 @@ reset_score:
       name: Benutzer-ID
       description: Die interne Home-Assistant-Benutzer-ID.
       required: true
+      selector:
+        text:
+
+deduct_points:
+  name: Punkte abziehen
+  description: >-
+    Zieht einem Benutzer manuell Punkte ab, unabhängig von Aufgaben
+    (z. B. für Fehlverhalten). Der Punktestand fällt dabei nie unter 0.
+    Erscheint im normalen Erledigungs-Verlauf (als negativer Eintrag)
+    und lässt sich über undo_completion wieder rückgängig machen. Nur
+    für Administratoren.
+  fields:
+    user_id:
+      name: Benutzer-ID
+      description: Die interne Home-Assistant-Benutzer-ID.
+      required: true
+      selector:
+        text:
+    amount:
+      name: Punkte
+      description: Anzahl der abzuziehenden Punkte (positive Zahl).
+      required: true
+      example: 10
+      selector:
+        number:
+          min: 1
+          max: 10000
+          mode: box
+    reason:
+      name: Grund
+      description: Optionale Begründung, erscheint im Verlauf.
+      required: false
+      example: "Unhöflichkeit"
       selector:
         text:
 
@@ -563,6 +642,26 @@ add_template:
               value: "5"
             - label: "Sonntag"
               value: "6"
+    due_in_days:
+      name: Fällig in X Tagen
+      description: >-
+        Optional - wird an jede aus dieser Vorlage erzeugte Aufgabe
+        weitergereicht (siehe add_task).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 3650
+          mode: box
+    reminder_days:
+      name: Erinnerung nach X Tagen offen
+      description: Optional - wird ebenfalls an jede erzeugte Aufgabe weitergereicht.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 3650
+          mode: box
 
 update_template:
   name: Standardaufgabe bearbeiten
@@ -676,6 +775,24 @@ update_template:
               value: "5"
             - label: "Sonntag"
               value: "6"
+    due_in_days:
+      name: Fällig in X Tagen
+      description: Ein leerer Wert entfernt die Fälligkeit bewusst.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 3650
+          mode: box
+    reminder_days:
+      name: Erinnerung nach X Tagen offen
+      description: Ein leerer Wert entfernt die Erinnerung bewusst.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 3650
+          mode: box
 
 remove_template:
   name: Standardaufgabe löschen
