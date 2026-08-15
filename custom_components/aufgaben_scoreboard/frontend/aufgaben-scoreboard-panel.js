@@ -61,6 +61,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // null = keins offen. Immer nur eins gleichzeitig, hält die Zeilen
     // im Normalfall kompakt.
     this._offenesRangMenuUserId = null;
+    // Merkt sich, für welchen Benutzer (falls überhaupt) das kleine
+    // "Punkte abziehen"-Inline-Formular gerade offen ist - null = keins.
+    this._punkteAbziehenUserId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -463,6 +466,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 const siege = b.zustand.attributes.siege || 0;
                 const punktekonto = b.zustand.attributes.punktekonto;
                 const menuOffen = this._offenesRangMenuUserId === userId;
+                const punkteAbziehenOffen = this._punkteAbziehenUserId === userId;
+                const benutzerName = this._escape(b.zustand.attributes.friendly_name || b.entityId);
                 return `
                 <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
                   <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
@@ -502,7 +507,6 @@ class AufgabenScoreboardPanel extends HTMLElement {
                                       <button
                                         class="btn-danger punkte-abziehen-btn"
                                         data-user-id="${userId}"
-                                        data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
                                         title="Punkte manuell abziehen (z. B. für Fehlverhalten)"
                                       >Punkte abziehen</button>
                                     </div>`
@@ -515,7 +519,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
                   </div>
                 </div>
                 ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
-                ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}`;
+                ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}
+                ${punkteAbziehenOffen ? this._renderPunkteAbziehenFormular(userId, benutzerName) : ""}`;
               })
               .join("")}
           </div>
@@ -696,6 +701,37 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 )
                 .join("")
         }
+      </div>
+    `;
+  }
+
+  /**
+   * Kleines Inline-Formular "Punkte abziehen" für einen einzelnen
+   * Benutzer - öffnet sich direkt unter dessen Rangliste-Zeile (analog
+   * zum Verlauf/Punktekonto-Verlauf oben). Ersetzt die frühere Lösung
+   * über zwei nacheinander folgende prompt()-Dialoge: native
+   * Browser-Prompts blenden aus Sicherheitsgründen immer die
+   * aufrufende Seiten-URL ein, was bei Fernzugriff über eine
+   * Nabu-Casa-Adresse unnötig kryptisch wirkt.
+   */
+  _renderPunkteAbziehenFormular(userId, benutzerName) {
+    return `
+      <div class="verlauf-bereich punkte-abziehen-bereich">
+        <form class="punkte-abziehen-formular" data-user-id="${userId}">
+          <div class="punkte-abziehen-titel">Punkte abziehen von ${benutzerName}</div>
+          <label>
+            Anzahl Punkte
+            <input type="number" name="amount" min="1" required autofocus />
+          </label>
+          <label>
+            Grund (optional)
+            <input type="text" name="reason" placeholder="z. B. Unhöflichkeit" />
+          </label>
+          <div class="formular-aktionen">
+            <button type="submit" class="btn-danger">Abziehen</button>
+            <button type="button" class="btn-secondary punkte-abziehen-abbrechen">Abbrechen</button>
+          </div>
+        </form>
       </div>
     `;
   }
@@ -1758,23 +1794,32 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     this.shadowRoot.querySelectorAll(".punkte-abziehen-btn").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
-        const userId = ev.target.getAttribute("data-user-id");
-        const userName = ev.target.getAttribute("data-user-name");
+        this._punkteAbziehenUserId = ev.target.getAttribute("data-user-id");
+        // Das ⋮-Menü schließt sich beim Öffnen des Formulars, damit
+        // beides nicht gleichzeitig sichtbar ist.
+        this._offenesRangMenuUserId = null;
+        this._render();
+      });
+    });
 
-        const eingabe = prompt(`Wie viele Punkte sollen "${userName}" abgezogen werden?`);
-        if (eingabe === null) return; // Abgebrochen
+    this.shadowRoot.querySelectorAll(".punkte-abziehen-formular").forEach((formular) => {
+      formular.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const daten = new FormData(formular);
+        const userId = formular.getAttribute("data-user-id");
+        const amount = Number(daten.get("amount"));
+        const reason = daten.get("reason") || "";
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        this._punkteAbziehen(userId, amount, reason);
+        this._punkteAbziehenUserId = null;
+        this._render();
+      });
+    });
 
-        const amount = Number(eingabe);
-        if (!Number.isFinite(amount) || amount <= 0) {
-          alert("Bitte eine positive Zahl eingeben.");
-          return;
-        }
-
-        const reason = prompt(`Grund für den Abzug (optional):`) || "";
-
-        if (confirm(`"${userName}" wirklich ${amount} Punkte abziehen${reason ? ` (Grund: "${reason}")` : ""}?`)) {
-          this._punkteAbziehen(userId, amount, reason);
-        }
+    this.shadowRoot.querySelectorAll(".punkte-abziehen-abbrechen").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._punkteAbziehenUserId = null;
+        this._render();
       });
     });
 
@@ -2335,6 +2380,34 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .punkte-badge-abgang {
         background: rgba(var(--rgb-danger-color, 244,67,54), 0.12);
         color: var(--error-color, #f44336);
+      }
+      .punkte-abziehen-bereich {
+        padding-top: 14px;
+        padding-bottom: 14px;
+      }
+      .punkte-abziehen-formular {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .punkte-abziehen-titel {
+        font-weight: 600;
+        color: var(--primary-text-color);
+      }
+      .punkte-abziehen-formular label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+      .punkte-abziehen-formular input {
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font-size: 1em;
       }
       .abschnitt-kopf-mit-aktion {
         display: flex;
