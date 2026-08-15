@@ -199,6 +199,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
     this._hass.callService("aufgaben_scoreboard", "reset_wins", { user_id: userId });
   }
 
+  _punkteAbziehen(userId, amount, reason) {
+    this._hass.callService("aufgaben_scoreboard", "deduct_points", {
+      user_id: userId,
+      amount: amount,
+      reason: reason,
+    });
+  }
+
   _praemieAnlegen(formData) {
     this._hass.callService("aufgaben_scoreboard", "add_reward", formData);
   }
@@ -491,6 +499,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
                                         data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
                                         title="Sieg-Zähler zurücksetzen"
                                       >Siege zurücksetzen</button>
+                                      <button
+                                        class="btn-danger punkte-abziehen-btn"
+                                        data-user-id="${userId}"
+                                        data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                                        title="Punkte manuell abziehen (z. B. für Fehlverhalten)"
+                                      >Punkte abziehen</button>
                                     </div>`
                                   : ""
                               }
@@ -566,10 +580,17 @@ class AufgabenScoreboardPanel extends HTMLElement {
         ${aufgaben
           .map(
             (a) => `
-          <div class="aufgaben-karte">
+          <div class="aufgaben-karte ${a.ist_ueberfaellig ? "aufgaben-karte-ueberfaellig" : ""}">
             <div class="aufgaben-info">
               <div class="aufgaben-name">${this._escape(a.name)}</div>
               ${a.description ? `<div class="aufgaben-beschreibung">${this._escape(a.description)}</div>` : ""}
+              ${
+                a.due_at
+                  ? `<div class="faelligkeit-hinweis ${a.ist_ueberfaellig ? "faelligkeit-ueberfaellig" : ""}">
+                      ${a.ist_ueberfaellig ? "⚠️ Überfällig seit" : "📅 Fällig am"} ${this._formatiereReinesDatum(a.due_at)}
+                    </div>`
+                  : ""
+              }
             </div>
             <div class="aufgaben-aktion">
               <span class="punkte-badge">+${a.score}</span>
@@ -692,6 +713,16 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     } catch (fehler) {
       return isoZeitstempel;
+    }
+  }
+
+  /** Formatiert ein reines ISO-Datum (YYYY-MM-DD, ohne Uhrzeit) als TT.MM.JJJJ - für due_at (Fälligkeit hat keine Uhrzeit). */
+  _formatiereReinesDatum(isoDatum) {
+    try {
+      const [jahr, monat, tag] = isoDatum.split("-");
+      return `${tag}.${monat}.${jahr}`;
+    } catch (fehler) {
+      return isoDatum;
     }
   }
 
@@ -1023,6 +1054,34 @@ class AufgabenScoreboardPanel extends HTMLElement {
               <legend>Zuständig (Mehrfachauswahl, leer = für alle offen)</legend>
               ${this._renderBenutzerCheckboxen(benutzerSensoren, vorbelegteBenutzer)}
             </fieldset>
+            <label>
+              Fällig in X Tagen (optional)
+              <input
+                type="number"
+                name="due_in_days"
+                min="0"
+                placeholder="z. B. 3"
+                value="${
+                  bearbeiteteAufgabe && bearbeiteteAufgabe.due_in_days !== null && bearbeiteteAufgabe.due_in_days !== undefined
+                    ? bearbeiteteAufgabe.due_in_days
+                    : ""
+                }"
+              />
+            </label>
+            <label>
+              Erinnerung nach X Tagen offen (optional)
+              <input
+                type="number"
+                name="reminder_days"
+                min="1"
+                placeholder="z. B. 2"
+                value="${
+                  bearbeiteteAufgabe && bearbeiteteAufgabe.reminder_days !== null && bearbeiteteAufgabe.reminder_days !== undefined
+                    ? bearbeiteteAufgabe.reminder_days
+                    : ""
+                }"
+              />
+            </label>
             <div class="formular-aktionen">
               <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
               ${
@@ -1043,7 +1102,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
               : offeneAufgaben
                   .map(
                     (a) => `
-              <div class="aufgaben-karte">
+              <div class="aufgaben-karte ${a.ist_ueberfaellig ? "aufgaben-karte-ueberfaellig" : ""}">
                 <div class="aufgaben-info">
                   <div class="aufgaben-name">${this._escape(a.name)}</div>
                   ${a.description ? `<div class="aufgaben-beschreibung">${this._escape(a.description)}</div>` : ""}
@@ -1054,6 +1113,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
                         : "Alle Benutzer"
                     }
                   </div>
+                  ${
+                    a.due_at
+                      ? `<div class="faelligkeit-hinweis ${a.ist_ueberfaellig ? "faelligkeit-ueberfaellig" : ""}">
+                          ${a.ist_ueberfaellig ? "⚠️ Überfällig seit" : "📅 Fällig am"} ${this._formatiereReinesDatum(a.due_at)}
+                        </div>`
+                      : ""
+                  }
                 </div>
                 <div class="aufgaben-aktion">
                   <span class="punkte-badge">+${a.score}</span>
@@ -1304,6 +1370,34 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 Entitäts-Trigger oder unabhängig davon genutzt werden.
               </div>
             </fieldset>
+            <label>
+              Fällig in X Tagen (optional)
+              <input
+                type="number"
+                name="due_in_days"
+                min="0"
+                placeholder="z. B. 3"
+                value="${
+                  bearbeiteteVorlage && bearbeiteteVorlage.due_in_days !== null && bearbeiteteVorlage.due_in_days !== undefined
+                    ? bearbeiteteVorlage.due_in_days
+                    : ""
+                }"
+              />
+            </label>
+            <label>
+              Erinnerung nach X Tagen offen (optional)
+              <input
+                type="number"
+                name="reminder_days"
+                min="1"
+                placeholder="z. B. 2"
+                value="${
+                  bearbeiteteVorlage && bearbeiteteVorlage.reminder_days !== null && bearbeiteteVorlage.reminder_days !== undefined
+                    ? bearbeiteteVorlage.reminder_days
+                    : ""
+                }"
+              />
+            </label>
             <div class="formular-aktionen">
               <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
               ${
@@ -1662,6 +1756,28 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".punkte-abziehen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const userId = ev.target.getAttribute("data-user-id");
+        const userName = ev.target.getAttribute("data-user-name");
+
+        const eingabe = prompt(`Wie viele Punkte sollen "${userName}" abgezogen werden?`);
+        if (eingabe === null) return; // Abgebrochen
+
+        const amount = Number(eingabe);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          alert("Bitte eine positive Zahl eingeben.");
+          return;
+        }
+
+        const reason = prompt(`Grund für den Abzug (optional):`) || "";
+
+        if (confirm(`"${userName}" wirklich ${amount} Punkte abziehen${reason ? ` (Grund: "${reason}")` : ""}?`)) {
+          this._punkteAbziehen(userId, amount, reason);
+        }
+      });
+    });
+
     this.shadowRoot.querySelectorAll(".freigeben-praemie-btn").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         this._einloesungFreigeben(ev.target.getAttribute("data-redemption-id"));
@@ -1770,6 +1886,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
         const ausgewaehlteBenutzer = Array.from(
           formular.querySelectorAll('input[name="assigned_to"]:checked')
         ).map((cb) => cb.value);
+        const dueInDays = daten.get("due_in_days") || "";
+        const reminderDays = daten.get("reminder_days") || "";
 
         const formData = {
           name: daten.get("name"),
@@ -1779,8 +1897,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
         };
 
         if (this._bearbeiteTaskId) {
+          // Beim Bearbeiten immer mitsenden - ein leerer Wert entfernt
+          // die jeweilige Bedingung bewusst (siehe async_update_task).
+          formData.due_in_days = dueInDays;
+          formData.reminder_days = reminderDays;
           this._aufgabeAktualisieren(this._bearbeiteTaskId, formData);
         } else {
+          // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt.
+          if (dueInDays) formData.due_in_days = dueInDays;
+          if (reminderDays) formData.reminder_days = reminderDays;
           this._neueAufgabeAnlegen(formData);
         }
 
@@ -1906,6 +2031,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Validierung serverseitig.
     const triggerAbove = daten.get("trigger_above") || "";
     const triggerBelow = daten.get("trigger_below") || "";
+    const dueInDays = daten.get("due_in_days") || "";
+    const reminderDays = daten.get("reminder_days") || "";
 
     // Zeitplan: die UI-Auswahl (schedule_type_ui, 4 Optionen) auf die
     // beiden tatsächlichen Backend-Felder abbilden - siehe Kommentar bei
@@ -1950,6 +2077,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
       formData.schedule_type = scheduleType;
       if (scheduleType) formData.schedule_interval = scheduleInterval;
       if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
+      formData.due_in_days = dueInDays;
+      formData.reminder_days = reminderDays;
       this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
     } else {
       // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
@@ -1962,6 +2091,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
       if (triggerState) formData.trigger_state = triggerState;
       if (triggerAbove) formData.trigger_above = triggerAbove;
       if (triggerBelow) formData.trigger_below = triggerBelow;
+      if (dueInDays) formData.due_in_days = dueInDays;
+      if (reminderDays) formData.reminder_days = reminderDays;
       if (scheduleType) {
         formData.schedule_type = scheduleType;
         formData.schedule_interval = scheduleInterval;
@@ -2286,6 +2417,19 @@ class AufgabenScoreboardPanel extends HTMLElement {
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
+      }
+      .aufgaben-karte-ueberfaellig {
+        border: 1px solid var(--error-color, #f44336);
+        background: rgba(var(--rgb-error-color, 244,67,54), 0.06);
+      }
+      .faelligkeit-hinweis {
+        color: var(--secondary-text-color);
+        font-size: 0.8em;
+        margin-top: 6px;
+      }
+      .faelligkeit-ueberfaellig {
+        color: var(--error-color, #f44336);
+        font-weight: 600;
       }
       .aufgaben-name {
         font-weight: 600;
