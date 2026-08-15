@@ -266,6 +266,75 @@ ein Dialog an, wer gerade führt. Nach der Durchführung:
 Der Sieg-Zähler lässt sich pro Benutzer separat über „Siege
 zurücksetzen" auf 0 setzen, unabhängig vom Punktestand.
 
+### Fälligkeit & Erinnerung
+
+Beim Anlegen/Bearbeiten einer Aufgabe (manuell oder als Standardaufgabe)
+lassen sich zwei unabhängige, gleichzeitig nutzbare Fristen setzen:
+
+- **Fällig in X Tagen**: taggenau ab heute berechnet. Überfällige
+  Aufgaben werden im Panel rot hervorgehoben (Rangliste-Ansicht und
+  Verwaltungs-Tab); zusätzlich feuert das Erreichen des Datums einmalig
+  das Event `aufgaben_scoreboard_task_overdue`.
+- **Erinnerung nach X Tagen offen**: unabhängig von der Fälligkeit,
+  löst einmalig `aufgaben_scoreboard_task_reminder` aus, sobald die
+  Aufgabe seit dieser Anzahl Tage ununterbrochen offen ist. Beide Fristen
+  lassen sich kombinieren, um z. B. zweimal zu erinnern - einmal vorher,
+  einmal bei Fälligkeit.
+
+Beide Events eignen sich direkt für eine Benachrichtigungs-Automation,
+nach demselben Muster wie bei den Freigabe-Benachrichtigungen weiter
+oben:
+
+```yaml
+alias: Aufgaben-Punktesystem – Fälligkeit & Erinnerung
+description: Benachrichtigt, wenn eine Aufgabe überfällig wird oder seit X Tagen offen ist.
+triggers:
+  - trigger: event
+    event_type: aufgaben_scoreboard_task_overdue
+    id: ueberfaellig
+  - trigger: event
+    event_type: aufgaben_scoreboard_task_reminder
+    id: erinnerung
+condition: []
+actions:
+  - variables:
+      titel: >-
+        {% if trigger.id == 'ueberfaellig' %}
+          Aufgabe überfällig
+        {% else %}
+          Erinnerung: Aufgabe noch offen
+        {% endif %}
+      nachricht: >-
+        {% if trigger.id == 'ueberfaellig' %}
+          "{{ trigger.event.data.name }}" ist jetzt überfällig.
+        {% else %}
+          "{{ trigger.event.data.name }}" ist immer noch offen.
+        {% endif %}
+  - action: notify.send_message
+    target:
+      entity_id: notify.dein_handy
+    data:
+      title: "{{ titel }}"
+      message: "{{ nachricht }}"
+mode: queued
+max: 10
+```
+
+`notify.dein_handy` wieder durch die eigene Notify-Entität ersetzen.
+Beide Trigger lassen sich auch einzeln nutzen, falls nur eines der
+beiden Events interessiert – dann einfach den jeweils anderen
+Trigger-Block und den zugehörigen `{% if %}`-Zweig weglassen.
+
+### Punktabzug (manuell, unabhängig von Aufgaben)
+
+Über das ⋮-Menü neben jedem Benutzer in der Rangliste steht zusätzlich
+zu den bestehenden Zurücksetzen-Optionen „Punkte abziehen" zur
+Verfügung (z. B. für Fehlverhalten, losgelöst vom Aufgabensystem). Der
+Punktestand fällt dabei nie unter 0. Ein Abzug erscheint automatisch im
+normalen Erledigungs-Verlauf des Benutzers (als negativer Eintrag) und
+lässt sich dort über „Rückgängig" innerhalb der üblichen Grenzen (7
+Tage / letzte 20 Einträge) wieder aufheben.
+
 ### Prämien-System (optional)
 
 Standardmäßig **deaktiviert**. Aktivierbar über **Einstellungen →
@@ -419,6 +488,7 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.reject_task`   | Erledigung ablehnen, Aufgabe wird wieder offen          | ✅        |
 | `aufgaben_scoreboard.undo_completion` | Bereits freigegebene Erledigung nachträglich zurücknehmen (Grenzen: 7 Tage / letzte 20 Einträge) | ✅ |
 | `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen (löscht dabei auch dessen Erledigungs-Historie) | ✅ |
+| `aufgaben_scoreboard.deduct_points` | Punkte manuell abziehen, unabhängig von Aufgaben (nie unter 0, per „Rückgängig" umkehrbar) | ✅ |
 | `aufgaben_scoreboard.perform_awards` | Siegerehrung durchführen: Sieg-Zähler des/der Gewinner +1, danach alle Punktestände zurücksetzen | ✅ |
 | `aufgaben_scoreboard.reset_wins`    | Sieg-Zähler eines Benutzers auf 0 zurücksetzen         | ✅        |
 | `aufgaben_scoreboard.add_reward`    | Prämie anlegen (nur bei aktiviertem Prämien-System relevant) | ✅   |
