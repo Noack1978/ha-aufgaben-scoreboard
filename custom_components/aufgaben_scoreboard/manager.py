@@ -29,6 +29,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import (
     EVENT_COMPLETION_UNDONE,
+    EVENT_POINTS_DEDUCTED,
     EVENT_REWARD_REDEMPTION_APPROVED,
     EVENT_REWARD_REDEMPTION_REJECTED,
     EVENT_REWARD_REDEMPTION_REQUESTED,
@@ -38,7 +39,9 @@ from .const import (
     EVENT_TASK_ASSIGNED,
     EVENT_TASK_COMPLETED,
     EVENT_TASK_COMPLETION_REQUESTED,
+    EVENT_TASK_OVERDUE,
     EVENT_TASK_REJECTED,
+    EVENT_TASK_REMINDER,
     EVENT_TASK_REMOVED,
     EVENT_TASK_UPDATED,
     EVENT_TEMPLATE_ADDED,
@@ -121,9 +124,15 @@ class AufgabenScoreboardManager:
                     # zugewiesenem Benutzer eine eigene, unabhängig
                     # erledigbare Aufgabe (statt einer gemeinsamen)
                 "trigger_entity_id": "<entity_id>" oder None,  # optional:
-                    # automatische Anlage, sobald diese Entität den unten
-                    # angegebenen Zustand erreicht
-                "trigger_state": "<zielzustand>" oder None,
+                    # automatische Anlage per Entitäts-Trigger, analog
+                    # zum Zustands-Trigger im Automationen-Editor
+                "trigger_state": "<zielzustand>" oder None,  # "zu"
+                "trigger_from_state": "<ausgangszustand>" oder None,  # "von" -
+                    # zusätzliche Bedingung zu trigger_state, optional
+                "trigger_above": 25.0 oder None,  # "über" - numerischer
+                    # Schwellwert, unabhängig von trigger_state nutzbar
+                "trigger_below": 10.0 oder None,  # "unter" - kann
+                    # gleichzeitig mit trigger_above gesetzt sein
                 "schedule_type": "days" | "weekly" | None,  # optional:
                     # automatische Anlage nach Zeitplan (zusätzlich und
                     # unabhängig vom Entitäts-Trigger nutzbar)
@@ -285,6 +294,20 @@ class AufgabenScoreboardManager:
             vorlage.setdefault("schedule_weekday", None)
             vorlage.setdefault("schedule_anchor", None)
             vorlage.setdefault("schedule_last_triggered", None)
+            vorlage.setdefault("trigger_from_state", None)
+            vorlage.setdefault("trigger_above", None)
+            vorlage.setdefault("trigger_below", None)
+            vorlage.setdefault("due_in_days", None)
+            vorlage.setdefault("reminder_days", None)
+
+        # Abwärtskompatibilität: Aufgaben aus Versionen vor Einführung
+        # von Fälligkeit/Erinnerung erhalten dieselben Defaults.
+        for aufgabe in self._data["tasks"].values():
+            aufgabe.setdefault("due_in_days", None)
+            aufgabe.setdefault("due_at", None)
+            aufgabe.setdefault("overdue_notified", False)
+            aufgabe.setdefault("reminder_days", None)
+            aufgabe.setdefault("reminder_notified", False)
 
         # Abwärtskompatibilität: Redemption-Einträge aus Versionen vor
         # einer künftigen Feld-Erweiterung erhalten hier ebenfalls
@@ -331,6 +354,8 @@ class AufgabenScoreboardManager:
         score: int,
         assigned_to: list[str] | None = None,
         template_id: str | None = None,
+        due_in_days: int | None = None,
+        reminder_days: int | None = None,
     ) -> str:
         """
         Legt eine neue Aufgabe an.
@@ -344,9 +369,18 @@ class AufgabenScoreboardManager:
         :param template_id: Falls die Aufgabe aus einer Standardaufgabe
             erzeugt wurde, deren ID (sonst None). Wird für den
             Duplikat-Schutz beim automatischen Entitäts-Trigger benötigt.
+        :param due_in_days: Optional - Fälligkeit in X Tagen ab heute
+            (nicht ab Erstellungszeit-Uhrzeit, sondern taggenau). Löst
+            EVENT_TASK_OVERDUE aus, sobald das Datum erreicht/
+            überschritten wird und die Aufgabe noch offen ist.
+        :param reminder_days: Optional - unabhängig von due_in_days
+            nutzbar (auch gleichzeitig): löst EVENT_TASK_REMINDER aus,
+            sobald die Aufgabe seit dieser Anzahl Tage ununterbrochen
+            offen ist.
         :return: Die generierte Aufgaben-ID.
         """
         task_id = uuid.uuid4().hex
+        heute = _heute_iso()
         self._data["tasks"][task_id] = {
             "id": task_id,
             "name": name,
@@ -360,6 +394,15 @@ class AufgabenScoreboardManager:
             # und wann - nur gesetzt, solange status == "pending_approval".
             "pending_by": None,
             "pending_since": None,
+            # Fälligkeit / Erinnerung (beide optional, unabhängig
+            # voneinander und gleichzeitig nutzbar - siehe Docstring).
+            "due_in_days": int(due_in_days) if due_in_days else None,
+            "due_at": (date.fromisoformat(heute) + timedelta(days=int(due_in_days))).isoformat()
+            if due_in_days
+            else None,
+            "overdue_notified": False,
+            "reminder_days": int(reminder_days) if reminder_days else None,
+            "reminder_notified": False,
         }
         await self._async_persist()
 
@@ -402,6 +445,8 @@ class AufgabenScoreboardManager:
         description: str | None = None,
         score: int | None = None,
         assigned_to: list[str] | None = None,
+        due_in_days: int | str | None = None,
+        reminder_days: int | str | None = None,
     ) -> bool:
         """
         Bearbeitet eine bestehende Aufgabe nachträglich (Titel,
@@ -411,7 +456,12 @@ class AufgabenScoreboardManager:
         unverändert. Für "assigned_to" bedeutet das: eine LEERE Liste
         ([]) setzt die Aufgabe bewusst auf "für alle offen" zurück,
         während KEINE Angabe (None) die bisherige Zuweisung unangetastet
-        lässt.
+        lässt. Für due_in_days/reminder_days gilt: der leere String ""
+        entfernt die jeweilige Bedingung bewusst (siehe
+        SCHEMA_UPDATE_TASK in __init__.py); wird der Wert tatsächlich
+        geändert, wird die zugehörige "*_notified"-Markierung
+        zurückgesetzt, damit das Event bei der neuen Frist erneut
+        auslösen kann.
 
         :return: True bei Erfolg, False falls die Aufgabe nicht existiert.
         """
@@ -428,6 +478,19 @@ class AufgabenScoreboardManager:
             aufgabe["score"] = int(score)
         if assigned_to is not None:
             aufgabe["assigned_to"] = list(assigned_to)
+
+        if due_in_days is not None:
+            if due_in_days == "":
+                aufgabe["due_in_days"] = None
+                aufgabe["due_at"] = None
+            else:
+                aufgabe["due_in_days"] = int(due_in_days)
+                aufgabe["due_at"] = (date.today() + timedelta(days=int(due_in_days))).isoformat()
+            aufgabe["overdue_notified"] = False
+
+        if reminder_days is not None:
+            aufgabe["reminder_days"] = None if reminder_days == "" else int(reminder_days)
+            aufgabe["reminder_notified"] = False
 
         await self._async_persist()
         self.hass.add_job(self.hass.bus.async_fire, EVENT_TASK_UPDATED, {"task_id": task_id})
@@ -692,6 +755,43 @@ class AufgabenScoreboardManager:
             user_id,
             entfernte_eintraege,
         )
+
+    async def async_deduct_points(self, user_id: str, amount: int, reason: str) -> None:
+        """
+        Zieht einem Benutzer manuell Punkte ab - unabhängig von
+        Aufgaben, z. B. für Fehlverhalten. Der Punktestand fällt dabei
+        nie unter 0.
+
+        Technisch wird dafür bewusst ein ganz normaler Eintrag in
+        "completions" angelegt (mit NEGATIVEM score und task_id=None
+        statt einer echten Aufgabe) - dadurch erscheint der Abzug
+        automatisch im bestehenden Erledigungs-Verlauf jedes Benutzers
+        (siehe get_completed_tasks_for_user()) und lässt sich über
+        denselben "Rückgängig"-Mechanismus wieder aufheben wie eine
+        normale Aufgaben-Erledigung (async_undo_completion() addiert
+        dabei automatisch korrekt wieder dazu, da es einfach den
+        gespeicherten - hier negativen - score-Wert vom aktuellen
+        Punktestand abzieht).
+        """
+        aktueller_stand = self._data["scores"].get(user_id, 0)
+        self._data["scores"][user_id] = max(0, aktueller_stand - int(amount))
+        self._data["completions"].append(
+            {
+                "completion_id": uuid.uuid4().hex,
+                "task_id": None,
+                "task_name": f"Abzug: {reason}" if reason else "Manueller Punktabzug",
+                "user_id": user_id,
+                "score": -int(amount),
+                "completed_at": _jetzt_iso(),
+            }
+        )
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_POINTS_DEDUCTED,
+            {"user_id": user_id, "amount": amount, "reason": reason},
+        )
+        _LOGGER.info("Benutzer '%s' wurden manuell %s Punkte abgezogen (Grund: %s).", user_id, amount, reason)
 
     # ------------------------------------------------------------------
     # Siegerehrung
@@ -1117,9 +1217,14 @@ class AufgabenScoreboardManager:
         multiscoring: bool = False,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        trigger_from_state: str | None = None,
+        trigger_above: float | None = None,
+        trigger_below: float | None = None,
         schedule_type: str | None = None,
         schedule_interval: int | None = None,
         schedule_weekday: int | None = None,
+        due_in_days: int | None = None,
+        reminder_days: int | None = None,
     ) -> str:
         """
         Legt eine neue Standardaufgabe (Vorlage) an.
@@ -1127,8 +1232,23 @@ class AufgabenScoreboardManager:
         :param multiscoring: Bei True entsteht beim Anlegen aus dieser
             Vorlage PRO zugewiesenem Benutzer eine eigene, unabhängig
             erledigbare Aufgabe statt einer gemeinsamen.
-        :param trigger_entity_id: Optionale Entität, bei deren Erreichen
-            von trigger_state automatisch eine Aufgabe erzeugt wird.
+        :param trigger_entity_id: Optionale Entität für den
+            Entitäts-Trigger. Mindestens eine der Bedingungen
+            trigger_state / trigger_above / trigger_below muss zusätzlich
+            gesetzt sein, damit der Trigger tatsächlich aktiv wird.
+        :param trigger_state: Ziel-Zustand ("zu"), analog zum
+            Automationen-Zustands-Trigger.
+        :param trigger_from_state: Optionaler Ausgangszustand ("von") -
+            zusätzliche Bedingung zu trigger_state, wird nur beim Wechsel
+            AUS GENAU DIESEM Zustand ausgelöst statt bei jedem Erreichen
+            von trigger_state.
+        :param trigger_above: Optionale numerische Schwelle ("über") -
+            löst aus, sobald der (als Zahl interpretierte) Zustand diesen
+            Wert von unten nach oben überschreitet.
+        :param trigger_below: Optionale numerische Schwelle ("unter") -
+            löst aus, sobald der Zustand diesen Wert von oben nach unten
+            unterschreitet. trigger_above und trigger_below können
+            gleichzeitig gesetzt sein (z. B. "außerhalb eines Bereichs").
         :param schedule_type: Optionaler Zeitplan-Trigger ("days" oder
             "weekly") - unabhängig vom Entitäts-Trigger nutzbar, auch
             gleichzeitig mit ihm.
@@ -1136,6 +1256,10 @@ class AufgabenScoreboardManager:
             alle X Wochen (1 = jede Woche). Ohne Angabe: 1.
         :param schedule_weekday: Nur bei "weekly" erforderlich: Wochentag
             (0=Montag ... 6=Sonntag).
+        :param due_in_days: Optional - wird an jede aus dieser Vorlage
+            erzeugte Aufgabe weitergereicht (siehe async_add_task).
+        :param reminder_days: Optional - wird ebenfalls an jede erzeugte
+            Aufgabe weitergereicht.
         :return: Die generierte Vorlagen-ID.
         """
         template_id = uuid.uuid4().hex
@@ -1149,6 +1273,9 @@ class AufgabenScoreboardManager:
             "multiscoring": bool(multiscoring),
             "trigger_entity_id": trigger_entity_id or None,
             "trigger_state": trigger_state or None,
+            "trigger_from_state": trigger_from_state or None,
+            "trigger_above": float(trigger_above) if trigger_above is not None else None,
+            "trigger_below": float(trigger_below) if trigger_below is not None else None,
             "schedule_type": schedule_type,
             "schedule_interval": (int(schedule_interval) if schedule_interval else 1) if schedule_type else None,
             "schedule_weekday": (int(schedule_weekday) if schedule_weekday is not None else None)
@@ -1156,6 +1283,8 @@ class AufgabenScoreboardManager:
             else None,
             "schedule_anchor": _heute_iso() if schedule_type else None,
             "schedule_last_triggered": None,
+            "due_in_days": int(due_in_days) if due_in_days else None,
+            "reminder_days": int(reminder_days) if reminder_days else None,
             "created_at": _jetzt_iso(),
         }
         await self._async_persist()
@@ -1181,16 +1310,25 @@ class AufgabenScoreboardManager:
         multiscoring: bool | None = None,
         trigger_entity_id: str | None = None,
         trigger_state: str | None = None,
+        trigger_from_state: str | None = None,
+        trigger_above: float | str | None = None,
+        trigger_below: float | str | None = None,
         schedule_type: str | None = None,
         schedule_interval: int | None = None,
         schedule_weekday: int | None = None,
+        due_in_days: int | str | None = None,
+        reminder_days: int | str | None = None,
     ) -> bool:
         """
         Bearbeitet eine bestehende Standardaufgabe nachträglich. Nur die
         tatsächlich übergebenen Felder werden geändert (gleiches Muster
-        wie async_update_task). Für trigger_entity_id/trigger_state sowie
-        schedule_type gilt: ein LEERER String entfernt den jeweiligen
-        Trigger bewusst, KEINE Angabe (None) lässt ihn unangetastet.
+        wie async_update_task). Für trigger_entity_id/trigger_state/
+        trigger_from_state sowie schedule_type gilt: ein LEERER String
+        entfernt den jeweiligen Trigger bewusst, KEINE Angabe (None)
+        lässt ihn unangetastet. Für trigger_above/trigger_below gilt
+        dasselbe - hier ist zusätzlich zu float auch der leere String ""
+        als bewusstes "entfernen" zulässig (siehe SCHEMA_UPDATE_TEMPLATE
+        in __init__.py).
 
         :return: True bei Erfolg, False falls die Vorlage nicht existiert.
         """
@@ -1213,6 +1351,16 @@ class AufgabenScoreboardManager:
             vorlage["trigger_entity_id"] = trigger_entity_id or None
         if trigger_state is not None:
             vorlage["trigger_state"] = trigger_state or None
+        if trigger_from_state is not None:
+            vorlage["trigger_from_state"] = trigger_from_state or None
+        if trigger_above is not None:
+            vorlage["trigger_above"] = None if trigger_above == "" else float(trigger_above)
+        if trigger_below is not None:
+            vorlage["trigger_below"] = None if trigger_below == "" else float(trigger_below)
+        if due_in_days is not None:
+            vorlage["due_in_days"] = None if due_in_days == "" else int(due_in_days)
+        if reminder_days is not None:
+            vorlage["reminder_days"] = None if reminder_days == "" else int(reminder_days)
 
         if schedule_type is not None:
             if schedule_type == "":
@@ -1306,6 +1454,8 @@ class AufgabenScoreboardManager:
                     score=vorlage["score"],
                     assigned_to=[user_id],
                     template_id=template_id,
+                    due_in_days=vorlage.get("due_in_days"),
+                    reminder_days=vorlage.get("reminder_days"),
                 )
                 erzeugte_ids.append(task_id)
         else:
@@ -1315,6 +1465,8 @@ class AufgabenScoreboardManager:
                 score=vorlage["score"],
                 assigned_to=vorlage["assigned_to"],
                 template_id=template_id,
+                due_in_days=vorlage.get("due_in_days"),
+                reminder_days=vorlage.get("reminder_days"),
             )
             erzeugte_ids.append(task_id)
 
@@ -1342,8 +1494,12 @@ class AufgabenScoreboardManager:
         """
         Gleicht die abonnierten Entitäts-Trigger mit dem aktuellen Stand
         der Standardaufgaben ab: alle bisherigen Listener werden
-        abgemeldet und aus den aktuellen Vorlagen (die einen
-        trigger_entity_id + trigger_state gesetzt haben) neu abonniert.
+        abgemeldet und aus den aktuellen Vorlagen neu abonniert. Ein
+        Listener wird nur registriert, wenn trigger_entity_id gesetzt
+        ist UND mindestens eine der Bedingungen trigger_state /
+        trigger_above / trigger_below gesetzt ist (trigger_from_state
+        allein reicht nicht - "von" ist nur eine ZUSATZ-Bedingung zu
+        "zu", ohne "zu" gäbe es kein definiertes Ziel).
 
         Wird aufgerufen: einmalig beim Start der Integration (aus
         __init__.py, nach async_load()) sowie nach jedem
@@ -1359,39 +1515,104 @@ class AufgabenScoreboardManager:
         for vorlage in self._data["templates"].values():
             entity_id = vorlage.get("trigger_entity_id")
             ziel_zustand = vorlage.get("trigger_state")
-            if not entity_id or not ziel_zustand:
+            ueber = vorlage.get("trigger_above")
+            unter = vorlage.get("trigger_below")
+            if not entity_id or not (ziel_zustand or ueber is not None or unter is not None):
                 continue
             template_id = vorlage["id"]
             self._trigger_unsub[template_id] = async_track_state_change_event(
                 self.hass,
                 [entity_id],
-                self._erzeuge_trigger_callback(template_id, ziel_zustand),
+                self._erzeuge_trigger_callback(
+                    template_id,
+                    ziel_zustand,
+                    vorlage.get("trigger_from_state"),
+                    ueber,
+                    unter,
+                ),
             )
 
-    def _erzeuge_trigger_callback(self, template_id: str, ziel_zustand: str):
+    def _erzeuge_trigger_callback(
+        self,
+        template_id: str,
+        ziel_zustand: str | None,
+        von_zustand: str | None,
+        ueber: float | None,
+        unter: float | None,
+    ):
         """
         Baut den Event-Callback für einen einzelnen Entitäts-Trigger.
         Eigene Funktion (statt Inline-Closure in sync_trigger_listeners),
-        damit template_id/ziel_zustand pro Vorlage korrekt "eingefangen"
-        werden und nicht durch die Schleifenvariable überschrieben
-        werden können.
+        damit die Bedingungen pro Vorlage korrekt "eingefangen" werden
+        und nicht durch die Schleifenvariable überschrieben werden
+        können. Bildet dieselben Bedingungsarten wie der
+        Zustands-Trigger im Automationen-Editor nach: "von" (optional),
+        "zu" (Ziel-Zustand als exakter String) sowie "über"/"unter"
+        (numerischer Schwellwert, unabhängig vom Zustands-Vergleich
+        nutzbar, auch kombinierbar).
         """
 
         @callback
         def _callback(event) -> None:
             neuer_zustand = event.data.get("new_state")
             alter_zustand = event.data.get("old_state")
-            if neuer_zustand is None or neuer_zustand.state != ziel_zustand:
+            if neuer_zustand is None:
                 return
-            # Nur bei einer echten FLANKE auslösen (Übergang IN den
-            # Zielzustand hinein) - async_track_state_change_event feuert
-            # bei JEDER Zustandsänderung der Entität, auch bei reinen
-            # Attribut-Änderungen während der Zustand bereits dem
-            # Zielwert entspricht. Ohne diese Prüfung würde z. B. jede
-            # Attribut-Aktualisierung eines bereits "on" stehenden
-            # Sensors erneut eine Aufgabe erzeugen wollen.
-            if alter_zustand is not None and alter_zustand.state == ziel_zustand:
-                return
+
+            # "von" prüfen (falls gesetzt): der VORHERIGE Zustand muss
+            # exakt diesem Wert entsprochen haben.
+            if von_zustand:
+                if alter_zustand is None or alter_zustand.state != von_zustand:
+                    return
+
+            # "zu" prüfen (falls gesetzt): exakter Ziel-Zustand, nur bei
+            # der FLANKE auslösen (Übergang IN den Zustand hinein) -
+            # async_track_state_change_event feuert bei JEDER
+            # Zustandsänderung, auch bei reinen Attribut-Änderungen
+            # während der Zustand bereits dem Ziel entspricht. Ohne
+            # diese Prüfung würde z. B. jede Attribut-Aktualisierung
+            # eines bereits "on" stehenden Sensors erneut auslösen.
+            if ziel_zustand:
+                if neuer_zustand.state != ziel_zustand:
+                    return
+                if alter_zustand is not None and alter_zustand.state == ziel_zustand:
+                    return
+
+            # "über"/"unter" prüfen (falls gesetzt): numerischer
+            # Vergleich, ebenfalls nur bei der FLANKE auslösen (Wert
+            # erfüllt jetzt ALLE gesetzten Schwellwert-Bedingungen
+            # zusammen, hat das vorher NICHT getan). Wichtig: Bei
+            # gleichzeitig gesetztem "über" UND "unter" (= Bereich, z. B.
+            # 10 < Wert < 30) muss die Flanke anhand der GESAMTEN
+            # Bedingung geprüft werden, nicht pro Feld einzeln - sonst
+            # würde z. B. ein alter Wert, der zwar schon unter der
+            # oberen Schwelle lag, aber die untere Schwelle noch nicht
+            # erreicht hatte, fälschlich als "war schon im Zielbereich"
+            # gewertet und die Flanke verpasst.
+            if ueber is not None or unter is not None:
+
+                def _erfuellt_schwellwerte(wert: float) -> bool:
+                    if ueber is not None and not (wert > ueber):
+                        return False
+                    if unter is not None and not (wert < unter):
+                        return False
+                    return True
+
+                try:
+                    neuer_wert = float(neuer_zustand.state)
+                except (TypeError, ValueError):
+                    return
+                if not _erfuellt_schwellwerte(neuer_wert):
+                    return
+
+                if alter_zustand is not None:
+                    try:
+                        alter_wert = float(alter_zustand.state)
+                    except (TypeError, ValueError):
+                        alter_wert = None
+                    if alter_wert is not None and _erfuellt_schwellwerte(alter_wert):
+                        return
+
             self.hass.async_create_task(self._async_trigger_ausloesen(template_id))
 
         return _callback
@@ -1476,6 +1697,57 @@ class AufgabenScoreboardManager:
             )
             await self.async_create_task_from_template(vorlage["id"])
 
+        await self._async_check_faelligkeiten(heute)
+
+    async def _async_check_faelligkeiten(self, heute: date) -> None:
+        """
+        Prüft alle OFFENEN Aufgaben auf Fälligkeit/Erinnerung und feuert
+        die jeweiligen Events EINMALIG (siehe "*_notified"-Flags). Läuft
+        im selben täglichen Rhythmus wie die Zeitplan-Prüfung (inkl.
+        Nachhol-Prüfung beim Start, siehe async_setup_schedule()) - für
+        eine Benachrichtigung ist ein täglicher statt minutengenauer
+        Prüf-Rhythmus ausreichend. Die live berechnete Anzeige im Panel
+        (siehe _mit_ueberfaelligkeit()) ist davon unabhängig und immer
+        aktuell.
+        """
+        aenderung = False
+        for aufgabe in self._data["tasks"].values():
+            if aufgabe["status"] != TASK_STATUS_OPEN:
+                continue
+
+            if (
+                aufgabe.get("due_at")
+                and not aufgabe.get("overdue_notified")
+                and date.fromisoformat(aufgabe["due_at"]) <= heute
+            ):
+                aufgabe["overdue_notified"] = True
+                aenderung = True
+                self.hass.add_job(
+                    self.hass.bus.async_fire,
+                    EVENT_TASK_OVERDUE,
+                    {"task_id": aufgabe["id"], "name": aufgabe["name"]},
+                )
+                _LOGGER.info("Aufgabe '%s' ist überfällig.", aufgabe["name"])
+
+            if aufgabe.get("reminder_days") and not aufgabe.get("reminder_notified"):
+                erledigt_seit = (heute - date.fromisoformat(aufgabe["created_at"][:10])).days
+                if erledigt_seit >= aufgabe["reminder_days"]:
+                    aufgabe["reminder_notified"] = True
+                    aenderung = True
+                    self.hass.add_job(
+                        self.hass.bus.async_fire,
+                        EVENT_TASK_REMINDER,
+                        {"task_id": aufgabe["id"], "name": aufgabe["name"]},
+                    )
+                    _LOGGER.info(
+                        "Aufgabe '%s' ist seit %s Tagen offen - Erinnerung ausgelöst.",
+                        aufgabe["name"],
+                        aufgabe["reminder_days"],
+                    )
+
+        if aenderung:
+            await self._async_persist()
+
     @staticmethod
     def _schedule_matches_today(vorlage: dict[str, Any], heute: date) -> bool:
         """
@@ -1534,6 +1806,24 @@ class AufgabenScoreboardManager:
         """Gibt den aktuellen Punktestand eines Benutzers zurück."""
         return int(self._data["scores"].get(user_id, 0))
 
+    @staticmethod
+    def _mit_ueberfaelligkeit(aufgabe: dict[str, Any]) -> dict[str, Any]:
+        """
+        Ergänzt eine Aufgaben-Kopie um das live berechnete Flag
+        "ist_ueberfaellig" (True, sobald das Fälligkeitsdatum erreicht
+        oder überschritten ist). Bewusst NICHT im Storage gespeichert,
+        sondern bei jedem Abruf neu berechnet - im Unterschied zu
+        "overdue_notified" (siehe async_check_faelligkeiten()), das nur
+        für das einmalige Auslösen von EVENT_TASK_OVERDUE gedacht ist
+        und dem täglichen Prüf-Rhythmus folgt. So zeigt das Panel eine
+        überfällige Aufgabe sofort korrekt an, auch wenn die tägliche
+        Prüfung (00:05 Uhr) noch nicht gelaufen ist.
+        """
+        aufgabe = copy.deepcopy(aufgabe)
+        faelligkeitsdatum = aufgabe.get("due_at")
+        aufgabe["ist_ueberfaellig"] = bool(faelligkeitsdatum) and date.fromisoformat(faelligkeitsdatum) <= date.today()
+        return aufgabe
+
     def get_open_tasks_for_user(self, user_id: str) -> list[dict[str, Any]]:
         """
         Liefert alle offenen Aufgaben, die für den angegebenen Benutzer
@@ -1551,7 +1841,7 @@ class AufgabenScoreboardManager:
                 continue
             zugewiesen = aufgabe["assigned_to"]
             if not zugewiesen or user_id in zugewiesen:
-                ergebnis.append(copy.deepcopy(aufgabe))
+                ergebnis.append(self._mit_ueberfaelligkeit(aufgabe))
         return ergebnis
 
     def get_pending_tasks_for_user(self, user_id: str) -> list[dict[str, Any]]:
@@ -1590,7 +1880,7 @@ class AufgabenScoreboardManager:
 
     def get_all_open_tasks(self) -> list[dict[str, Any]]:
         """Liefert alle offenen Aufgaben (für Übersichts-/Admin-Ansicht)."""
-        return [copy.deepcopy(a) for a in self._data["tasks"].values() if a["status"] == TASK_STATUS_OPEN]
+        return [self._mit_ueberfaelligkeit(a) for a in self._data["tasks"].values() if a["status"] == TASK_STATUS_OPEN]
 
     def get_all_tasks(self) -> list[dict[str, Any]]:
         """
@@ -1615,7 +1905,7 @@ class AufgabenScoreboardManager:
         Mit copy.deepcopy() ist jeder zurückgegebene Snapshot
         unabhängig von zukünftigen Mutationen der internen Daten.
         """
-        return [copy.deepcopy(a) for a in self._data["tasks"].values()]
+        return [self._mit_ueberfaelligkeit(a) for a in self._data["tasks"].values()]
 
     def get_all_templates(self) -> list[dict[str, Any]]:
         """Liefert alle Standardaufgaben (für die Admin-Ansicht im Panel). Kopien aus denselben Gründen wie get_all_tasks()."""

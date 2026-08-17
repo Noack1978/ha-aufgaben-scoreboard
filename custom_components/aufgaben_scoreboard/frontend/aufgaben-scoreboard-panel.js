@@ -56,6 +56,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // (siehe _render() - fällt automatisch auf "benutzer" zurück,
     // falls der aktive Tab für die aktuellen Rechte nicht existiert).
     this._aktiverTab = "benutzer";
+    // Merkt sich, für welchen Benutzer (falls überhaupt) das ⋮-Aktions-
+    // Menü in der Rangliste gerade offen ist (Zurücksetzen-Buttons) -
+    // null = keins offen. Immer nur eins gleichzeitig, hält die Zeilen
+    // im Normalfall kompakt.
+    this._offenesRangMenuUserId = null;
+    // Merkt sich, für welchen Benutzer (falls überhaupt) das kleine
+    // "Punkte abziehen"-Inline-Formular gerade offen ist - null = keins.
+    this._punkteAbziehenUserId = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -192,6 +200,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
   _siegeZuruecksetzen(userId) {
     this._hass.callService("aufgaben_scoreboard", "reset_wins", { user_id: userId });
+  }
+
+  _punkteAbziehen(userId, amount, reason) {
+    this._hass.callService("aufgaben_scoreboard", "deduct_points", {
+      user_id: userId,
+      amount: amount,
+      reason: reason,
+    });
   }
 
   _praemieAnlegen(formData) {
@@ -449,6 +465,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
                 const siege = b.zustand.attributes.siege || 0;
                 const punktekonto = b.zustand.attributes.punktekonto;
+                const menuOffen = this._offenesRangMenuUserId === userId;
+                const punkteAbziehenOffen = this._punkteAbziehenUserId === userId;
+                const benutzerName = this._escape(b.zustand.attributes.friendly_name || b.entityId);
                 return `
                 <div class="rang-eintrag ${userId === eigeneUserId ? "ich" : ""}">
                   <span class="rang-name rang-name-klickbar" data-user-id="${userId}">
@@ -456,35 +475,52 @@ class AufgabenScoreboardPanel extends HTMLElement {
                     <span class="verlauf-pfeil">${aufgeklappt ? "▲" : "▼"}</span>
                   </span>
                   <div class="rang-rechts">
-                    ${siege > 0 ? `<span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>` : ""}
-                    ${
-                      punktekonto !== undefined
-                        ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
-                            💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
-                          </span>`
-                        : ""
-                    }
-                    <span class="rang-punkte">${b.zustand.state} Pkt.</span>
-                    ${
-                      istAdmin
-                        ? `<button
-                            class="btn-secondary reset-punkte-btn"
-                            data-user-id="${userId}"
-                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                            title="Punktestand zurücksetzen"
-                          >Zurücksetzen</button>
-                          <button
-                            class="btn-secondary reset-siege-btn"
-                            data-user-id="${userId}"
-                            data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
-                            title="Sieg-Zähler zurücksetzen"
-                          >Siege zurücksetzen</button>`
-                        : ""
-                    }
+                    <div class="rang-badges">
+                      <span class="sieg-badge" title="Gewonnene Siegerehrungen">🏆 ${siege}</span>
+                      ${
+                        punktekonto !== undefined
+                          ? `<span class="konto-badge konto-badge-klickbar" data-user-id="${userId}" title="Punktekonto-Verlauf anzeigen">
+                              💰 ${punktekonto} <span class="verlauf-pfeil">${kontoAufgeklappt ? "▲" : "▼"}</span>
+                            </span>`
+                          : ""
+                      }
+                      <span class="rang-punkte">${b.zustand.state} Pkt.</span>
+                      ${
+                        istAdmin
+                          ? `<div class="rang-menu-wrapper">
+                              <button class="rang-menu-btn" data-user-id="${userId}" title="Weitere Aktionen">⋮</button>
+                              ${
+                                menuOffen
+                                  ? `<div class="rang-aktionen rang-aktionen-popup">
+                                      <button
+                                        class="btn-secondary reset-punkte-btn"
+                                        data-user-id="${userId}"
+                                        data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                                        title="Punktestand zurücksetzen"
+                                      >Zurücksetzen</button>
+                                      <button
+                                        class="btn-secondary reset-siege-btn"
+                                        data-user-id="${userId}"
+                                        data-user-name="${this._escape(b.zustand.attributes.friendly_name || b.entityId)}"
+                                        title="Sieg-Zähler zurücksetzen"
+                                      >Siege zurücksetzen</button>
+                                      <button
+                                        class="btn-danger punkte-abziehen-btn"
+                                        data-user-id="${userId}"
+                                        title="Punkte manuell abziehen (z. B. für Fehlverhalten)"
+                                      >Punkte abziehen</button>
+                                    </div>`
+                                  : ""
+                              }
+                            </div>`
+                          : ""
+                      }
+                    </div>
                   </div>
                 </div>
                 ${aufgeklappt ? this._renderVerlauf(verlauf, istAdmin) : ""}
-                ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}`;
+                ${kontoAufgeklappt ? this._renderPunktekontoVerlauf(punktekonto, kontoVerlauf) : ""}
+                ${punkteAbziehenOffen ? this._renderPunkteAbziehenFormular(userId, benutzerName) : ""}`;
               })
               .join("")}
           </div>
@@ -549,10 +585,17 @@ class AufgabenScoreboardPanel extends HTMLElement {
         ${aufgaben
           .map(
             (a) => `
-          <div class="aufgaben-karte">
+          <div class="aufgaben-karte ${a.ist_ueberfaellig ? "aufgaben-karte-ueberfaellig" : ""}">
             <div class="aufgaben-info">
               <div class="aufgaben-name">${this._escape(a.name)}</div>
               ${a.description ? `<div class="aufgaben-beschreibung">${this._escape(a.description)}</div>` : ""}
+              ${
+                a.due_at
+                  ? `<div class="faelligkeit-hinweis ${a.ist_ueberfaellig ? "faelligkeit-ueberfaellig" : ""}">
+                      ${a.ist_ueberfaellig ? "⚠️ Überfällig seit" : "📅 Fällig am"} ${this._formatiereReinesDatum(a.due_at)}
+                    </div>`
+                  : ""
+              }
             </div>
             <div class="aufgaben-aktion">
               <span class="punkte-badge">+${a.score}</span>
@@ -662,6 +705,37 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `;
   }
 
+  /**
+   * Kleines Inline-Formular "Punkte abziehen" für einen einzelnen
+   * Benutzer - öffnet sich direkt unter dessen Rangliste-Zeile (analog
+   * zum Verlauf/Punktekonto-Verlauf oben). Ersetzt die frühere Lösung
+   * über zwei nacheinander folgende prompt()-Dialoge: native
+   * Browser-Prompts blenden aus Sicherheitsgründen immer die
+   * aufrufende Seiten-URL ein, was bei Fernzugriff über eine
+   * Nabu-Casa-Adresse unnötig kryptisch wirkt.
+   */
+  _renderPunkteAbziehenFormular(userId, benutzerName) {
+    return `
+      <div class="verlauf-bereich punkte-abziehen-bereich">
+        <form class="punkte-abziehen-formular" data-user-id="${userId}">
+          <div class="punkte-abziehen-titel">Punkte abziehen von ${benutzerName}</div>
+          <label>
+            Anzahl Punkte
+            <input type="number" name="amount" min="1" required autofocus />
+          </label>
+          <label>
+            Grund (optional)
+            <input type="text" name="reason" placeholder="z. B. Unhöflichkeit" />
+          </label>
+          <div class="formular-aktionen">
+            <button type="submit" class="btn-danger">Abziehen</button>
+            <button type="button" class="btn-secondary punkte-abziehen-abbrechen">Abbrechen</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   /** Formatiert einen ISO-8601-Zeitstempel als lesbares Datum (TT.MM.JJJJ, hh:mm). */
   _formatiereDatum(isoZeitstempel) {
     try {
@@ -675,6 +749,16 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     } catch (fehler) {
       return isoZeitstempel;
+    }
+  }
+
+  /** Formatiert ein reines ISO-Datum (YYYY-MM-DD, ohne Uhrzeit) als TT.MM.JJJJ - für due_at (Fälligkeit hat keine Uhrzeit). */
+  _formatiereReinesDatum(isoDatum) {
+    try {
+      const [jahr, monat, tag] = isoDatum.split("-");
+      return `${tag}.${monat}.${jahr}`;
+    } catch (fehler) {
+      return isoDatum;
     }
   }
 
@@ -1006,6 +1090,34 @@ class AufgabenScoreboardPanel extends HTMLElement {
               <legend>Zuständig (Mehrfachauswahl, leer = für alle offen)</legend>
               ${this._renderBenutzerCheckboxen(benutzerSensoren, vorbelegteBenutzer)}
             </fieldset>
+            <label>
+              Fällig in X Tagen (optional)
+              <input
+                type="number"
+                name="due_in_days"
+                min="0"
+                placeholder="z. B. 3"
+                value="${
+                  bearbeiteteAufgabe && bearbeiteteAufgabe.due_in_days !== null && bearbeiteteAufgabe.due_in_days !== undefined
+                    ? bearbeiteteAufgabe.due_in_days
+                    : ""
+                }"
+              />
+            </label>
+            <label>
+              Erinnerung nach X Tagen offen (optional)
+              <input
+                type="number"
+                name="reminder_days"
+                min="1"
+                placeholder="z. B. 2"
+                value="${
+                  bearbeiteteAufgabe && bearbeiteteAufgabe.reminder_days !== null && bearbeiteteAufgabe.reminder_days !== undefined
+                    ? bearbeiteteAufgabe.reminder_days
+                    : ""
+                }"
+              />
+            </label>
             <div class="formular-aktionen">
               <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
               ${
@@ -1026,7 +1138,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
               : offeneAufgaben
                   .map(
                     (a) => `
-              <div class="aufgaben-karte">
+              <div class="aufgaben-karte ${a.ist_ueberfaellig ? "aufgaben-karte-ueberfaellig" : ""}">
                 <div class="aufgaben-info">
                   <div class="aufgaben-name">${this._escape(a.name)}</div>
                   ${a.description ? `<div class="aufgaben-beschreibung">${this._escape(a.description)}</div>` : ""}
@@ -1037,6 +1149,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
                         : "Alle Benutzer"
                     }
                   </div>
+                  ${
+                    a.due_at
+                      ? `<div class="faelligkeit-hinweis ${a.ist_ueberfaellig ? "faelligkeit-ueberfaellig" : ""}">
+                          ${a.ist_ueberfaellig ? "⚠️ Überfällig seit" : "📅 Fällig am"} ${this._formatiereReinesDatum(a.due_at)}
+                        </div>`
+                      : ""
+                  }
                 </div>
                 <div class="aufgaben-aktion">
                   <span class="punkte-badge">+${a.score}</span>
@@ -1207,11 +1326,44 @@ class AufgabenScoreboardPanel extends HTMLElement {
             <fieldset class="trigger-feld">
               <legend>Automatische Anlage per Entität (optional)</legend>
               <div class="ha-selector-slot" data-feld="trigger_entity_id"></div>
+              <div class="ha-selector-slot" data-feld="trigger_from_state"></div>
               <div class="ha-selector-slot" data-feld="trigger_state"></div>
+              <label>
+                Wert über (optional)
+                <input
+                  type="number"
+                  step="any"
+                  name="trigger_above"
+                  placeholder="z. B. 25"
+                  value="${
+                    bearbeiteteVorlage && bearbeiteteVorlage.trigger_above !== null && bearbeiteteVorlage.trigger_above !== undefined
+                      ? bearbeiteteVorlage.trigger_above
+                      : ""
+                  }"
+                />
+              </label>
+              <label>
+                Wert unter (optional)
+                <input
+                  type="number"
+                  step="any"
+                  name="trigger_below"
+                  placeholder="z. B. 10"
+                  value="${
+                    bearbeiteteVorlage && bearbeiteteVorlage.trigger_below !== null && bearbeiteteVorlage.trigger_below !== undefined
+                      ? bearbeiteteVorlage.trigger_below
+                      : ""
+                  }"
+                />
+              </label>
               <div class="hinweis-klein">
-                Sobald die gewählte Entität den Ziel-Zustand erreicht, wird
-                automatisch eine Aufgabe aus dieser Vorlage angelegt - sofern
-                nicht bereits eine offene Aufgabe daraus existiert.
+                Wie beim Zustands-Trigger im Automationen-Editor: "Von"
+                und "Zu" prüfen den exakten Zustandstext (beide optional,
+                "Von" nur sinnvoll zusammen mit "Zu"). "Über"/"Unter"
+                vergleichen den Zustand als Zahl und sind unabhängig
+                davon nutzbar - auch gleichzeitig, für einen Wertebereich.
+                Automatische Anlage nur, sofern nicht bereits eine offene
+                Aufgabe aus dieser Vorlage existiert.
               </div>
             </fieldset>
             <fieldset class="zeitplan-feld">
@@ -1254,6 +1406,34 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 Entitäts-Trigger oder unabhängig davon genutzt werden.
               </div>
             </fieldset>
+            <label>
+              Fällig in X Tagen (optional)
+              <input
+                type="number"
+                name="due_in_days"
+                min="0"
+                placeholder="z. B. 3"
+                value="${
+                  bearbeiteteVorlage && bearbeiteteVorlage.due_in_days !== null && bearbeiteteVorlage.due_in_days !== undefined
+                    ? bearbeiteteVorlage.due_in_days
+                    : ""
+                }"
+              />
+            </label>
+            <label>
+              Erinnerung nach X Tagen offen (optional)
+              <input
+                type="number"
+                name="reminder_days"
+                min="1"
+                placeholder="z. B. 2"
+                value="${
+                  bearbeiteteVorlage && bearbeiteteVorlage.reminder_days !== null && bearbeiteteVorlage.reminder_days !== undefined
+                    ? bearbeiteteVorlage.reminder_days
+                    : ""
+                }"
+              />
+            </label>
             <div class="formular-aktionen">
               <button type="submit" class="btn-primary">${buttonBeschriftung}</button>
               ${
@@ -1328,8 +1508,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
    */
   _haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand) {
     const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
+    const fromStateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_from_state"]');
     const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
-    if (!entitySlot || !stateSlot) return;
+    if (!entitySlot || !fromStateSlot || !stateSlot) return;
 
     const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
     const bearbeiteteVorlage = this._bearbeiteVorlageId
@@ -1340,6 +1521,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Daten) - das ist der richtige Ausgangspunkt beim allerersten Öffnen
     // des Formulars.
     let entityWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_entity_id || "" : "";
+    let fromStateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_from_state || "" : "";
     let stateWert = bearbeiteteVorlage ? bearbeiteteVorlage.trigger_state || "" : "";
 
     // WICHTIG: Ist bereits ein Formular-Zustand für GENAU dieses Formular
@@ -1356,6 +1538,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
       if ("trigger_entity_id" in gesicherterFormularZustand.werte) {
         entityWert = gesicherterFormularZustand.werte.trigger_entity_id || "";
       }
+      if ("trigger_from_state" in gesicherterFormularZustand.werte) {
+        fromStateWert = gesicherterFormularZustand.werte.trigger_from_state || "";
+      }
       if ("trigger_state" in gesicherterFormularZustand.werte) {
         stateWert = gesicherterFormularZustand.werte.trigger_state || "";
       }
@@ -1367,8 +1552,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
         <label>Auslösende Entität (Entity-ID)
           <input type="text" data-feld-name="trigger_entity_id" placeholder="z. B. binary_sensor.tuer_garage" value="${this._escape(entityWert)}" />
         </label>`;
+      fromStateSlot.innerHTML = `
+        <label>Ausgangszustand ("von")
+          <input type="text" data-feld-name="trigger_from_state" placeholder="z. B. off" value="${this._escape(fromStateWert)}" />
+        </label>`;
       stateSlot.innerHTML = `
-        <label>Ziel-Zustand
+        <label>Ziel-Zustand ("zu")
           <input type="text" data-feld-name="trigger_state" placeholder="z. B. on" value="${this._escape(stateWert)}" />
         </label>`;
       return;
@@ -1393,17 +1582,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
       // Ohne dieses explizite Zurückschreiben auf .value würde die
       // Auswahl beim nächsten Render (siehe unten) wieder verloren gehen.
       entitySelector.value = ev.detail.value;
-      // Neu rendern, damit der Ziel-Zustand-Selector direkt im Anschluss
-      // mit der NEU gewählten Entität aufgebaut wird und deren bekannte
-      // Zustände vorschlägt (genau wie im Automationen-Editor). Bereits
-      // eingegebene Formularwerte bleiben durch
+      // Neu rendern, damit die Zustands-Selectoren direkt im Anschluss
+      // mit der NEU gewählten Entität aufgebaut werden und deren
+      // bekannte Zustände vorschlagen (genau wie im Automationen-
+      // Editor). Bereits eingegebene Formularwerte bleiben durch
       // _sichereFormularZustand()/_stelleFormularZustandWieder() erhalten.
       this._render();
     });
 
+    const fromStateSelector = document.createElement("ha-selector");
+    fromStateSelector.hass = this._hass;
+    fromStateSelector.label = 'Ausgangszustand ("von")';
+    fromStateSelector.selector = { state: { entity_id: entityWert || undefined } };
+    fromStateSelector.value = fromStateWert || undefined;
+    fromStateSelector.required = false;
+    fromStateSelector.dataset.feldName = "trigger_from_state";
+    fromStateSelector.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      fromStateSelector.value = ev.detail.value;
+    });
+
     const stateSelector = document.createElement("ha-selector");
     stateSelector.hass = this._hass;
-    stateSelector.label = "Ziel-Zustand";
+    stateSelector.label = 'Ziel-Zustand ("zu")';
     stateSelector.selector = { state: { entity_id: entityWert || undefined } };
     stateSelector.value = stateWert || undefined;
     stateSelector.required = false;
@@ -1419,21 +1620,27 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     entitySlot.innerHTML = "";
     entitySlot.appendChild(entitySelector);
+    fromStateSlot.innerHTML = "";
+    fromStateSlot.appendChild(fromStateSelector);
     stateSlot.innerHTML = "";
     stateSlot.appendChild(stateSelector);
 
-    // Zusätzlich zu einem eventuellen eingebauten Lösch-Icon des
-    // Selectors: ein eigener, garantiert sichtbarer Button, der BEIDE
-    // Trigger-Felder auf einen Klick leert. So ist das Entfernen nicht
+    // Zusätzlich zu einem eventuellen eingebauten Lösch-Icon der
+    // Selectoren: ein eigener, garantiert sichtbarer Button, der ALLE
+    // DREI Trigger-Zustandsfelder auf einen Klick leert (Über/Unter
+    // bleiben davon unberührt, da sie unabhängig nutzbar sind - dafür
+    // gibt es keinen eigenen Entfernen-Button, ein leeres Zahlenfeld
+    // ist selbsterklärend "nicht gesetzt"). So ist das Entfernen nicht
     // von einer UI-Eigenheit des ha-selector abhängig, die sich zwischen
     // Home-Assistant-Versionen unterscheiden kann.
-    if (entityWert || stateWert) {
+    if (entityWert || fromStateWert || stateWert) {
       const entfernenBtn = document.createElement("button");
       entfernenBtn.type = "button";
       entfernenBtn.className = "btn-secondary trigger-entfernen-btn";
       entfernenBtn.textContent = "Trigger entfernen";
       entfernenBtn.addEventListener("click", () => {
         entitySelector.value = undefined;
+        fromStateSelector.value = undefined;
         stateSelector.value = undefined;
         this._render();
       });
@@ -1483,6 +1690,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
       el.addEventListener("click", () => {
         const userId = el.getAttribute("data-user-id");
         this._aufgeklappterPunktekontoUserId = this._aufgeklappterPunktekontoUserId === userId ? null : userId;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".rang-menu-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const userId = ev.target.getAttribute("data-user-id");
+        this._offenesRangMenuUserId = this._offenesRangMenuUserId === userId ? null : userId;
         this._render();
       });
     });
@@ -1573,6 +1789,37 @@ class AufgabenScoreboardPanel extends HTMLElement {
         if (confirm(`Sieg-Zähler von "${userName}" wirklich auf 0 zurücksetzen?`)) {
           this._siegeZuruecksetzen(userId);
         }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".punkte-abziehen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._punkteAbziehenUserId = ev.target.getAttribute("data-user-id");
+        // Das ⋮-Menü schließt sich beim Öffnen des Formulars, damit
+        // beides nicht gleichzeitig sichtbar ist.
+        this._offenesRangMenuUserId = null;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".punkte-abziehen-formular").forEach((formular) => {
+      formular.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const daten = new FormData(formular);
+        const userId = formular.getAttribute("data-user-id");
+        const amount = Number(daten.get("amount"));
+        const reason = daten.get("reason") || "";
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        this._punkteAbziehen(userId, amount, reason);
+        this._punkteAbziehenUserId = null;
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll(".punkte-abziehen-abbrechen").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._punkteAbziehenUserId = null;
+        this._render();
       });
     });
 
@@ -1684,6 +1931,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
         const ausgewaehlteBenutzer = Array.from(
           formular.querySelectorAll('input[name="assigned_to"]:checked')
         ).map((cb) => cb.value);
+        const dueInDays = daten.get("due_in_days") || "";
+        const reminderDays = daten.get("reminder_days") || "";
 
         const formData = {
           name: daten.get("name"),
@@ -1693,8 +1942,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
         };
 
         if (this._bearbeiteTaskId) {
+          // Beim Bearbeiten immer mitsenden - ein leerer Wert entfernt
+          // die jeweilige Bedingung bewusst (siehe async_update_task).
+          formData.due_in_days = dueInDays;
+          formData.reminder_days = reminderDays;
           this._aufgabeAktualisieren(this._bearbeiteTaskId, formData);
         } else {
+          // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt.
+          if (dueInDays) formData.due_in_days = dueInDays;
+          if (reminderDays) formData.reminder_days = reminderDays;
           this._neueAufgabeAnlegen(formData);
         }
 
@@ -1808,9 +2064,20 @@ class AufgabenScoreboardPanel extends HTMLElement {
     );
     const multiscoringFeld = formular.querySelector('input[name="multiscoring"]');
     const entityFeld = formular.querySelector('[data-feld-name="trigger_entity_id"]');
+    const fromStateFeld = formular.querySelector('[data-feld-name="trigger_from_state"]');
     const stateFeld = formular.querySelector('[data-feld-name="trigger_state"]');
     const triggerEntityId = entityFeld ? entityFeld.value || "" : "";
+    const triggerFromState = fromStateFeld ? fromStateFeld.value || "" : "";
     const triggerState = stateFeld ? stateFeld.value || "" : "";
+    // trigger_above/trigger_below sind normale, benannte <input>-Felder
+    // (kein ha-selector) - roher String-Wert aus FormData, damit sich
+    // "" (leer/entfernt) von "0" (gültiger Zahlenwert 0) unterscheiden
+    // lässt; die Umwandlung in eine Zahl übernimmt die Service-Schema-
+    // Validierung serverseitig.
+    const triggerAbove = daten.get("trigger_above") || "";
+    const triggerBelow = daten.get("trigger_below") || "";
+    const dueInDays = daten.get("due_in_days") || "";
+    const reminderDays = daten.get("reminder_days") || "";
 
     // Zeitplan: die UI-Auswahl (schedule_type_ui, 4 Optionen) auf die
     // beiden tatsächlichen Backend-Felder abbilden - siehe Kommentar bei
@@ -1848,17 +2115,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
       // Beim Bearbeiten IMMER mitsenden - ein leerer Wert entfernt den
       // jeweiligen Trigger dabei bewusst (siehe async_update_template).
       formData.trigger_entity_id = triggerEntityId;
+      formData.trigger_from_state = triggerFromState;
       formData.trigger_state = triggerState;
+      formData.trigger_above = triggerAbove;
+      formData.trigger_below = triggerBelow;
       formData.schedule_type = scheduleType;
       if (scheduleType) formData.schedule_interval = scheduleInterval;
       if (scheduleWeekday !== null) formData.schedule_weekday = scheduleWeekday;
+      formData.due_in_days = dueInDays;
+      formData.reminder_days = reminderDays;
       this._vorlageAktualisieren(this._bearbeiteVorlageId, formData);
     } else {
       // Beim Neuanlegen nur mitsenden, wenn tatsächlich ausgefüllt - ein
-      // leerer String ist kein gültiger Zeitplan-Typ und würde die
-      // Service-Validierung von add_template fehlschlagen lassen.
+      // leerer String ist kein gültiger Zeitplan-Typ/Zahlenwert und
+      // würde die Service-Validierung von add_template fehlschlagen
+      // lassen (dort ist "leer/entfernt" als Konzept nicht vorgesehen -
+      // es gibt ja noch nichts zu entfernen).
       if (triggerEntityId) formData.trigger_entity_id = triggerEntityId;
+      if (triggerFromState) formData.trigger_from_state = triggerFromState;
       if (triggerState) formData.trigger_state = triggerState;
+      if (triggerAbove) formData.trigger_above = triggerAbove;
+      if (triggerBelow) formData.trigger_below = triggerBelow;
+      if (dueInDays) formData.due_in_days = dueInDays;
+      if (reminderDays) formData.reminder_days = reminderDays;
       if (scheduleType) {
         formData.schedule_type = scheduleType;
         formData.schedule_interval = scheduleInterval;
@@ -1997,22 +2276,83 @@ class AufgabenScoreboardPanel extends HTMLElement {
         background: var(--card-background-color);
         border-radius: 12px;
         box-shadow: var(--ha-card-box-shadow, 0 1px 3px rgba(0,0,0,0.12));
-        overflow: hidden;
+        /* WICHTIG: kein overflow:hidden mehr - würde das absolut
+           positionierte ⋮-Aktionsmenü (siehe .rang-aktionen-popup)
+           an den Rändern der Liste abschneiden, v. a. bei der letzten
+           Zeile. Der kleine kosmetische Nachteil (eckige statt
+           abgerundete Ecken bei einer eingefärbten "ich"-Zeile ganz
+           oben/unten) wiegt das nicht auf.
+        */
       }
       .rang-eintrag {
+        position: relative;
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: 10px;
         padding: 12px 16px;
         border-bottom: 1px solid var(--divider-color, #eee);
         color: var(--primary-text-color);
       }
       .rang-eintrag:last-child { border-bottom: none; }
+      .rang-eintrag:first-child { border-radius: 12px 12px 0 0; }
+      .rang-eintrag:last-child { border-radius: 0 0 12px 12px; }
+      .rang-eintrag:only-child { border-radius: 12px; }
       .rang-eintrag.ich { background: rgba(var(--rgb-primary-color, 3,169,244), 0.08); font-weight: 600; }
       .rang-rechts {
         display: flex;
         align-items: center;
         gap: 10px;
+      }
+      .rang-badges {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .rang-menu-wrapper {
+        flex-shrink: 0;
+      }
+      .rang-menu-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 1.1em;
+        line-height: 1;
+        padding: 2px 6px;
+        color: var(--secondary-text-color);
+      }
+      .rang-menu-btn:hover {
+        color: var(--primary-text-color);
+      }
+      .rang-aktionen-popup {
+        /* WICHTIG: bewusst relativ zur GESAMTEN Zeile (.rang-eintrag,
+           siehe position:relative oben) positioniert statt relativ zum
+           winzigen ⋮-Button-Wrapper - Letzteres führte in Kombination
+           mit dem umbrechenden Flex-Layout der Badges (flex-wrap) dazu,
+           dass das Popup weit links am Bildschirmrand statt beim Button
+           erschien. Die Zeile selbst hat eine stabile, volle Breite und
+           liefert damit einen zuverlässigen Bezugsrahmen.
+        */
+        position: absolute;
+        top: 100%;
+        right: 16px;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 170px;
+        margin-top: 4px;
+        padding: 8px;
+        background: var(--card-background-color);
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 8px;
+        box-shadow: var(--ha-card-box-shadow, 0 2px 8px rgba(0,0,0,0.25));
+      }
+      .rang-aktionen-popup button {
+        width: 100%;
       }
       .rang-punkte { color: var(--primary-color); font-weight: 700; }
       .reset-punkte-btn,
@@ -2040,6 +2380,34 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .punkte-badge-abgang {
         background: rgba(var(--rgb-danger-color, 244,67,54), 0.12);
         color: var(--error-color, #f44336);
+      }
+      .punkte-abziehen-bereich {
+        padding-top: 14px;
+        padding-bottom: 14px;
+      }
+      .punkte-abziehen-formular {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .punkte-abziehen-titel {
+        font-weight: 600;
+        color: var(--primary-text-color);
+      }
+      .punkte-abziehen-formular label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+      .punkte-abziehen-formular input {
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font-size: 1em;
       }
       .abschnitt-kopf-mit-aktion {
         display: flex;
@@ -2122,6 +2490,19 @@ class AufgabenScoreboardPanel extends HTMLElement {
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
+      }
+      .aufgaben-karte-ueberfaellig {
+        border: 1px solid var(--error-color, #f44336);
+        background: rgba(var(--rgb-error-color, 244,67,54), 0.06);
+      }
+      .faelligkeit-hinweis {
+        color: var(--secondary-text-color);
+        font-size: 0.8em;
+        margin-top: 6px;
+      }
+      .faelligkeit-ueberfaellig {
+        color: var(--error-color, #f44336);
+        font-weight: 600;
       }
       .aufgaben-name {
         font-weight: 600;

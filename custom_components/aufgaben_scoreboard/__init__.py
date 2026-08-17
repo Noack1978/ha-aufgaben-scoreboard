@@ -58,14 +58,18 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    ATTR_AMOUNT,
     ATTR_ASSIGNED_TO,
     ATTR_COMPLETION_ID,
     ATTR_COST,
     ATTR_DESCRIPTION,
+    ATTR_DUE_IN_DAYS,
     ATTR_DURATION_MINUTES,
     ATTR_MULTISCORING,
     ATTR_NAME,
+    ATTR_REASON,
     ATTR_REDEMPTION_ID,
+    ATTR_REMINDER_DAYS,
     ATTR_REWARD_ID,
     ATTR_REWARD_TYPE,
     ATTR_SCHEDULE_INTERVAL,
@@ -75,7 +79,10 @@ from .const import (
     ATTR_SWITCH_ENTITY_ID,
     ATTR_TASK_ID,
     ATTR_TEMPLATE_ID,
+    ATTR_TRIGGER_ABOVE,
+    ATTR_TRIGGER_BELOW,
     ATTR_TRIGGER_ENTITY_ID,
+    ATTR_TRIGGER_FROM_STATE,
     ATTR_TRIGGER_STATE,
     ATTR_USER_ID,
     CARD_JS_FILENAME,
@@ -100,6 +107,7 @@ from .const import (
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
     SERVICE_CREATE_TASK_FROM_TEMPLATE,
+    SERVICE_DEDUCT_POINTS,
     SERVICE_PERFORM_AWARDS,
     SERVICE_REJECT_REDEMPTION,
     SERVICE_REJECT_TASK,
@@ -139,6 +147,8 @@ SCHEMA_ADD_TASK = vol.Schema(
         vol.Optional(ATTR_ASSIGNED_TO, default=[]): vol.All(
             cv.ensure_list, [cv.string]
         ),
+        vol.Optional(ATTR_DUE_IN_DAYS): vol.Coerce(int),
+        vol.Optional(ATTR_REMINDER_DAYS): vol.Coerce(int),
     }
 )
 
@@ -147,11 +157,15 @@ SCHEMA_UPDATE_TASK = vol.Schema(
         vol.Required(ATTR_TASK_ID): cv.string,
         # Alle inhaltlichen Felder sind beim Bearbeiten optional - nur
         # tatsächlich übergebene Felder werden geändert (siehe
-        # AufgabenScoreboardManager.async_update_task).
+        # AufgabenScoreboardManager.async_update_task). Für due_in_days/
+        # reminder_days entfernt ein LEERER String die jeweilige
+        # Bedingung bewusst.
         vol.Optional(ATTR_NAME): cv.string,
         vol.Optional(ATTR_DESCRIPTION): cv.string,
         vol.Optional(ATTR_SCORE): vol.Coerce(int),
         vol.Optional(ATTR_ASSIGNED_TO): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional(ATTR_DUE_IN_DAYS): vol.Any(vol.Coerce(int), ""),
+        vol.Optional(ATTR_REMINDER_DAYS): vol.Any(vol.Coerce(int), ""),
     }
 )
 
@@ -174,6 +188,14 @@ SCHEMA_COMPLETE_TASK = vol.Schema(
 )
 
 SCHEMA_RESET_SCORE = vol.Schema({vol.Required(ATTR_USER_ID): cv.string})
+
+SCHEMA_DEDUCT_POINTS = vol.Schema(
+    {
+        vol.Required(ATTR_USER_ID): cv.string,
+        vol.Required(ATTR_AMOUNT): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(ATTR_REASON, default=""): cv.string,
+    }
+)
 
 # -----------------------------------------------------------------------
 # Freigabe-Workflow
@@ -199,12 +221,17 @@ SCHEMA_ADD_TEMPLATE = vol.Schema(
         # ausgedrückt, nicht durch einen leeren Wert.
         vol.Optional(ATTR_TRIGGER_ENTITY_ID): cv.entity_id,
         vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+        vol.Optional(ATTR_TRIGGER_FROM_STATE): cv.string,
+        vol.Optional(ATTR_TRIGGER_ABOVE): vol.Coerce(float),
+        vol.Optional(ATTR_TRIGGER_BELOW): vol.Coerce(float),
         # Zeitplan-Trigger (alle X Tage / jede bzw. alle X Wochen am
         # Wochentag Y) - optional, unabhängig vom Entitäts-Trigger
         # nutzbar. schedule_weekday: 0=Montag ... 6=Sonntag.
         vol.Optional(ATTR_SCHEDULE_TYPE): vol.In([SCHEDULE_TYPE_DAYS, SCHEDULE_TYPE_WEEKLY]),
         vol.Optional(ATTR_SCHEDULE_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=1)),
         vol.Optional(ATTR_SCHEDULE_WEEKDAY): vol.All(vol.Coerce(int), vol.Range(min=0, max=6)),
+        vol.Optional(ATTR_DUE_IN_DAYS): vol.Coerce(int),
+        vol.Optional(ATTR_REMINDER_DAYS): vol.Coerce(int),
     }
 )
 
@@ -223,9 +250,14 @@ SCHEMA_UPDATE_TEMPLATE = vol.Schema(
         vol.Optional(ATTR_MULTISCORING): cv.boolean,
         vol.Optional(ATTR_TRIGGER_ENTITY_ID): vol.Any(cv.entity_id, ""),
         vol.Optional(ATTR_TRIGGER_STATE): cv.string,
+        vol.Optional(ATTR_TRIGGER_FROM_STATE): cv.string,
+        vol.Optional(ATTR_TRIGGER_ABOVE): vol.Any(vol.Coerce(float), ""),
+        vol.Optional(ATTR_TRIGGER_BELOW): vol.Any(vol.Coerce(float), ""),
         vol.Optional(ATTR_SCHEDULE_TYPE): vol.Any(SCHEDULE_TYPE_DAYS, SCHEDULE_TYPE_WEEKLY, ""),
         vol.Optional(ATTR_SCHEDULE_INTERVAL): vol.All(vol.Coerce(int), vol.Range(min=1)),
         vol.Optional(ATTR_SCHEDULE_WEEKDAY): vol.All(vol.Coerce(int), vol.Range(min=0, max=6)),
+        vol.Optional(ATTR_DUE_IN_DAYS): vol.Any(vol.Coerce(int), ""),
+        vol.Optional(ATTR_REMINDER_DAYS): vol.Any(vol.Coerce(int), ""),
     }
 )
 
@@ -350,7 +382,15 @@ async def _async_register_card_resource(hass: HomeAssistant) -> None:
         )
         return
 
-    if getattr(lovelace, "mode", None) != "storage":
+    # WICHTIG: Bestätigter Breaking Change in Home Assistant seit
+    # 2026.2 (Übergangsfrist bis 2026.8, inzwischen abgelaufen): Das
+    # Attribut heißt nicht mehr "mode", sondern "resource_mode". Ohne
+    # diesen Fallback würde getattr(lovelace, "mode", None) auf neueren
+    # HA-Versionen immer None liefern - die Integration würde dann
+    # fälschlich IMMER "YAML-Modus" annehmen und die automatische
+    # Registrierung überspringen, selbst im ganz normalen Storage-Modus.
+    lovelace_modus = getattr(lovelace, "resource_mode", None) or getattr(lovelace, "mode", None)
+    if lovelace_modus != "storage":
         _LOGGER.info(
             "Lovelace läuft im YAML-Modus - die Custom Card muss dort manuell als Ressource "
             "eingetragen werden (URL: %s/%s). Siehe README.",
@@ -533,7 +573,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_REJECT_TASK,
                 SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
-                SERVICE_PERFORM_AWARDS,
+                SERVICE_DEDUCT_POINTS,
                 SERVICE_RESET_WINS,
                 SERVICE_ADD_REWARD,
                 SERVICE_UPDATE_REWARD,
@@ -593,6 +633,8 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             description=call.data.get(ATTR_DESCRIPTION, ""),
             score=call.data[ATTR_SCORE],
             assigned_to=call.data.get(ATTR_ASSIGNED_TO, []),
+            due_in_days=call.data.get(ATTR_DUE_IN_DAYS),
+            reminder_days=call.data.get(ATTR_REMINDER_DAYS),
         )
 
     async def handle_update_task(call: ServiceCall) -> None:
@@ -605,6 +647,8 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             description=call.data.get(ATTR_DESCRIPTION),
             score=call.data.get(ATTR_SCORE),
             assigned_to=call.data.get(ATTR_ASSIGNED_TO),
+            due_in_days=call.data.get(ATTR_DUE_IN_DAYS),
+            reminder_days=call.data.get(ATTR_REMINDER_DAYS),
         )
 
     async def handle_remove_task(call: ServiceCall) -> None:
@@ -762,9 +806,14 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             multiscoring=call.data.get(ATTR_MULTISCORING, False),
             trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
             trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+            trigger_from_state=call.data.get(ATTR_TRIGGER_FROM_STATE),
+            trigger_above=call.data.get(ATTR_TRIGGER_ABOVE),
+            trigger_below=call.data.get(ATTR_TRIGGER_BELOW),
             schedule_type=call.data.get(ATTR_SCHEDULE_TYPE),
             schedule_interval=call.data.get(ATTR_SCHEDULE_INTERVAL),
             schedule_weekday=call.data.get(ATTR_SCHEDULE_WEEKDAY),
+            due_in_days=call.data.get(ATTR_DUE_IN_DAYS),
+            reminder_days=call.data.get(ATTR_REMINDER_DAYS),
         )
 
     async def handle_update_template(call: ServiceCall) -> None:
@@ -780,9 +829,14 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             multiscoring=call.data.get(ATTR_MULTISCORING),
             trigger_entity_id=call.data.get(ATTR_TRIGGER_ENTITY_ID),
             trigger_state=call.data.get(ATTR_TRIGGER_STATE),
+            trigger_from_state=call.data.get(ATTR_TRIGGER_FROM_STATE),
+            trigger_above=call.data.get(ATTR_TRIGGER_ABOVE),
+            trigger_below=call.data.get(ATTR_TRIGGER_BELOW),
             schedule_type=call.data.get(ATTR_SCHEDULE_TYPE),
             schedule_interval=call.data.get(ATTR_SCHEDULE_INTERVAL),
             schedule_weekday=call.data.get(ATTR_SCHEDULE_WEEKDAY),
+            due_in_days=call.data.get(ATTR_DUE_IN_DAYS),
+            reminder_days=call.data.get(ATTR_REMINDER_DAYS),
         )
 
     async def handle_remove_template(call: ServiceCall) -> None:
@@ -790,6 +844,16 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             _LOGGER.warning("Nicht-Administrator hat versucht, eine Standardaufgabe zu löschen - abgelehnt.")
             return
         await manager.async_remove_template(call.data[ATTR_TEMPLATE_ID])
+
+    async def handle_deduct_points(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            _LOGGER.warning("Nicht-Administrator hat versucht, Punkte abzuziehen - abgelehnt.")
+            return
+        await manager.async_deduct_points(
+            user_id=call.data[ATTR_USER_ID],
+            amount=call.data[ATTR_AMOUNT],
+            reason=call.data.get(ATTR_REASON, ""),
+        )
 
     async def handle_create_task_from_template(call: ServiceCall) -> None:
         if not await _ist_admin(hass, call):
@@ -806,6 +870,7 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
     hass.services.async_register(DOMAIN, SERVICE_UNASSIGN_TASK, handle_unassign_task, schema=SCHEMA_ASSIGN_TASK)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_TASK, handle_complete_task, schema=SCHEMA_COMPLETE_TASK)
     hass.services.async_register(DOMAIN, SERVICE_RESET_SCORE, handle_reset_score, schema=SCHEMA_RESET_SCORE)
+    hass.services.async_register(DOMAIN, SERVICE_DEDUCT_POINTS, handle_deduct_points, schema=SCHEMA_DEDUCT_POINTS)
     hass.services.async_register(
         DOMAIN, SERVICE_PERFORM_AWARDS, handle_perform_awards, schema=SCHEMA_PERFORM_AWARDS
     )

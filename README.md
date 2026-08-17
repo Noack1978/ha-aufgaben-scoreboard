@@ -131,6 +131,64 @@ und nur unter den letzten **20 Erledigungen** desselben Benutzers. Ältere
 Einträge werden im Verlauf weiterhin angezeigt, aber ohne
 „Rückgängig"-Button.
 
+#### Admin per Automation benachrichtigen, wenn eine Freigabe wartet
+
+Für beide Freigabe-Arten (Aufgaben und Prämien-Einlösungen) werden
+eigene Events gefeuert, sobald eine Anfrage entsteht:
+`aufgaben_scoreboard_task_completion_requested` bzw.
+`aufgaben_scoreboard_reward_redemption_requested`. Damit lässt sich
+schon heute eine Benachrichtigungs-Automation bauen:
+
+```yaml
+alias: Aufgaben-Punktesystem – Freigabe erforderlich
+description: Benachrichtigt den Admin, sobald eine Aufgabe oder Prämie auf Freigabe wartet.
+triggers:
+  - trigger: event
+    event_type: aufgaben_scoreboard_task_completion_requested
+    id: aufgabe
+  - trigger: event
+    event_type: aufgaben_scoreboard_reward_redemption_requested
+    id: praemie
+condition: []
+actions:
+  - variables:
+      benutzer_name: >-
+        {% set uid = trigger.event.data.user_id %}
+        {% set sensor = states.sensor | selectattr('attributes.user_id', 'defined') | selectattr('attributes.user_id', 'eq', uid) | first %}
+        {{ sensor.name if sensor else uid }}
+      titel: >-
+        {% if trigger.id == 'aufgabe' %}
+          Aufgabe wartet auf Freigabe
+        {% else %}
+          Prämie wartet auf Freigabe
+        {% endif %}
+      nachricht: >-
+        {% if trigger.id == 'aufgabe' %}
+          {% set tid = trigger.event.data.task_id %}
+          {% set aufgabe = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'wartende_aufgaben') | selectattr('id', 'eq', tid) | first %}
+          {{ benutzer_name }} hat "{{ aufgabe.name if aufgabe else 'eine Aufgabe' }}" als erledigt gemeldet.
+        {% else %}
+          {% set rid = trigger.event.data.reward_id %}
+          {% set eintrag = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'wartende_praemien') | selectattr('reward_id', 'eq', rid) | selectattr('user_id', 'eq', trigger.event.data.user_id) | first %}
+          {{ benutzer_name }} möchte "{{ eintrag.reward_name if eintrag else 'eine Prämie' }}" einlösen.
+        {% endif %}
+  - action: notify.send_message
+    target:
+      entity_id: notify.dein_handy
+    data:
+      title: "{{ titel }}"
+      message: "{{ nachricht }}"
+mode: queued
+max: 10
+```
+
+`notify.dein_handy` durch die eigene Notify-Entität ersetzen (z. B. die
+der Companion App – `notify.send_message` mit Entity-Target ist die
+aktuelle Schreibweise, nicht mehr `notify.mobile_app_*` als
+Service-Name). Nutzt du kein Prämien-System, lassen sich der zweite
+Trigger-Block (`id: praemie`) und der zugehörige `{% else %}`-Zweig
+weglassen.
+
 ### Berücksichtigte Benutzer konfigurieren
 
 Standardmäßig bekommt jeder aktive, nicht-technische Home-Assistant-
@@ -152,12 +210,20 @@ einmalig fest; konkrete, erledigbare Aufgaben lassen sich daraus
 beliebig oft erzeugen:
 
 - **Manuell**: Button „Jetzt anlegen“ bei der jeweiligen Standardaufgabe.
-- **Automatisch per Entitäts-Trigger**: über eine optionale Entität +
-  Ziel-Zustand direkt im Formular (mit derselben Entitäts-/
-  Zustands-Auswahl wie im Automationen-Editor). Sobald die gewählte
-  Entität den Zielwert erreicht, wird automatisch eine Aufgabe angelegt
-  – aber nur, wenn nicht bereits eine offene Aufgabe aus derselben
-  Vorlage existiert (Duplikat-Schutz).
+- **Automatisch per Entitäts-Trigger**: über eine optionale Entität
+  direkt im Formular, mit denselben Bedingungsarten wie beim
+  Zustands-Trigger im Automationen-Editor (inkl. derselben Entitäts-/
+  Zustands-Auswahl-Komponente):
+  - **Von / Zu**: exakter Zustandstext, beide optional. „Zu“ allein
+    löst bei jedem Erreichen dieses Zustands aus; zusätzlich „Von“
+    schränkt das auf den Übergang aus GENAU diesem Ausgangszustand ein.
+  - **Über / Unter**: numerischer Schwellwert, unabhängig von Von/Zu
+    nutzbar – auch gleichzeitig, für einen Wertebereich (z. B. „über 10
+    und unter 30“).
+  
+  Sobald die Bedingung erfüllt ist, wird automatisch eine Aufgabe
+  angelegt – aber nur, wenn nicht bereits eine offene Aufgabe aus
+  derselben Vorlage existiert (Duplikat-Schutz).
 - **Automatisch per Zeitplan**: unabhängig vom Entitäts-Trigger (auch
   gleichzeitig mit ihm nutzbar) lässt sich eine Standardaufgabe so
   konfigurieren, dass sie
@@ -199,6 +265,75 @@ ein Dialog an, wer gerade führt. Nach der Durchführung:
 
 Der Sieg-Zähler lässt sich pro Benutzer separat über „Siege
 zurücksetzen" auf 0 setzen, unabhängig vom Punktestand.
+
+### Fälligkeit & Erinnerung
+
+Beim Anlegen/Bearbeiten einer Aufgabe (manuell oder als Standardaufgabe)
+lassen sich zwei unabhängige, gleichzeitig nutzbare Fristen setzen:
+
+- **Fällig in X Tagen**: taggenau ab heute berechnet. Überfällige
+  Aufgaben werden im Panel rot hervorgehoben (Rangliste-Ansicht und
+  Verwaltungs-Tab); zusätzlich feuert das Erreichen des Datums einmalig
+  das Event `aufgaben_scoreboard_task_overdue`.
+- **Erinnerung nach X Tagen offen**: unabhängig von der Fälligkeit,
+  löst einmalig `aufgaben_scoreboard_task_reminder` aus, sobald die
+  Aufgabe seit dieser Anzahl Tage ununterbrochen offen ist. Beide Fristen
+  lassen sich kombinieren, um z. B. zweimal zu erinnern - einmal vorher,
+  einmal bei Fälligkeit.
+
+Beide Events eignen sich direkt für eine Benachrichtigungs-Automation,
+nach demselben Muster wie bei den Freigabe-Benachrichtigungen weiter
+oben:
+
+```yaml
+alias: Aufgaben-Punktesystem – Fälligkeit & Erinnerung
+description: Benachrichtigt, wenn eine Aufgabe überfällig wird oder seit X Tagen offen ist.
+triggers:
+  - trigger: event
+    event_type: aufgaben_scoreboard_task_overdue
+    id: ueberfaellig
+  - trigger: event
+    event_type: aufgaben_scoreboard_task_reminder
+    id: erinnerung
+condition: []
+actions:
+  - variables:
+      titel: >-
+        {% if trigger.id == 'ueberfaellig' %}
+          Aufgabe überfällig
+        {% else %}
+          Erinnerung: Aufgabe noch offen
+        {% endif %}
+      nachricht: >-
+        {% if trigger.id == 'ueberfaellig' %}
+          "{{ trigger.event.data.name }}" ist jetzt überfällig.
+        {% else %}
+          "{{ trigger.event.data.name }}" ist immer noch offen.
+        {% endif %}
+  - action: notify.send_message
+    target:
+      entity_id: notify.dein_handy
+    data:
+      title: "{{ titel }}"
+      message: "{{ nachricht }}"
+mode: queued
+max: 10
+```
+
+`notify.dein_handy` wieder durch die eigene Notify-Entität ersetzen.
+Beide Trigger lassen sich auch einzeln nutzen, falls nur eines der
+beiden Events interessiert – dann einfach den jeweils anderen
+Trigger-Block und den zugehörigen `{% if %}`-Zweig weglassen.
+
+### Punktabzug (manuell, unabhängig von Aufgaben)
+
+Über das ⋮-Menü neben jedem Benutzer in der Rangliste steht zusätzlich
+zu den bestehenden Zurücksetzen-Optionen „Punkte abziehen" zur
+Verfügung (z. B. für Fehlverhalten, losgelöst vom Aufgabensystem). Der
+Punktestand fällt dabei nie unter 0. Ein Abzug erscheint automatisch im
+normalen Erledigungs-Verlauf des Benutzers (als negativer Eintrag) und
+lässt sich dort über „Rückgängig" innerhalb der üblichen Grenzen (7
+Tage / letzte 20 Einträge) wieder aufheben.
 
 ### Prämien-System (optional)
 
@@ -353,6 +488,7 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.reject_task`   | Erledigung ablehnen, Aufgabe wird wieder offen          | ✅        |
 | `aufgaben_scoreboard.undo_completion` | Bereits freigegebene Erledigung nachträglich zurücknehmen (Grenzen: 7 Tage / letzte 20 Einträge) | ✅ |
 | `aufgaben_scoreboard.reset_score`   | Punktestand eines Benutzers auf 0 zurücksetzen (löscht dabei auch dessen Erledigungs-Historie) | ✅ |
+| `aufgaben_scoreboard.deduct_points` | Punkte manuell abziehen, unabhängig von Aufgaben (nie unter 0, per „Rückgängig" umkehrbar) | ✅ |
 | `aufgaben_scoreboard.perform_awards` | Siegerehrung durchführen: Sieg-Zähler des/der Gewinner +1, danach alle Punktestände zurücksetzen | ✅ |
 | `aufgaben_scoreboard.reset_wins`    | Sieg-Zähler eines Benutzers auf 0 zurücksetzen         | ✅        |
 | `aufgaben_scoreboard.add_reward`    | Prämie anlegen (nur bei aktiviertem Prämien-System relevant) | ✅   |
