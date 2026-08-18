@@ -6,6 +6,11 @@ Jede Aufgabe hat einen festen Punktwert. Benutzer erledigen Aufgaben,
 um Punkte zu sammeln – Aufgaben können außerdem gezielt bestimmten
 Benutzern zugewiesen werden.
 
+<img width="1220" height="2410" alt="1000062019" src="https://github.com/user-attachments/assets/90d2a835-b261-4a3d-9f06-66572dc83bdd" />
+<img width="1220" height="2386" alt="1000062017" src="https://github.com/user-attachments/assets/5ed3824c-91ae-4239-887e-6ebfd32543a9" />
+<img width="1220" height="2370" alt="1000062015" src="https://github.com/user-attachments/assets/29e04ebe-8e10-49b6-8738-4381c897b5e6" />
+<img width="1220" height="1319" alt="1000062013" src="https://github.com/user-attachments/assets/f1ab8538-78ab-4597-a55d-e2212c2ab333" />
+
 ## ✨ Funktionen
 
 - **Aufgaben manuell anlegen** mit Titel, Beschreibung und Punktwert
