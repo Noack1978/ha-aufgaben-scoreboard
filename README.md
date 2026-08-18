@@ -6,10 +6,13 @@ Jede Aufgabe hat einen festen Punktwert. Benutzer erledigen Aufgaben,
 um Punkte zu sammeln – Aufgaben können außerdem gezielt bestimmten
 Benutzern zugewiesen werden.
 
-<img width="1220" height="2410" alt="1000062019" src="https://github.com/user-attachments/assets/90d2a835-b261-4a3d-9f06-66572dc83bdd" />
-<img width="1220" height="2386" alt="1000062017" src="https://github.com/user-attachments/assets/5ed3824c-91ae-4239-887e-6ebfd32543a9" />
-<img width="1220" height="2370" alt="1000062015" src="https://github.com/user-attachments/assets/29e04ebe-8e10-49b6-8738-4381c897b5e6" />
-<img width="1220" height="1319" alt="1000062013" src="https://github.com/user-attachments/assets/f1ab8538-78ab-4597-a55d-e2212c2ab333" />
+## Screenshot 
+<img width="1220" height="1319" alt="1000062013" src="https://github.com/user-attachments/assets/aa9a3d8b-3287-4d4f-9e4c-c0d8d76f7818" />
+<img width="1220" height="2370" alt="1000062015" src="https://github.com/user-attachments/assets/bc497f2d-aa2e-42e4-bfcb-58c3be2a6e58" />
+<img width="1220" height="2386" alt="1000062017" src="https://github.com/user-attachments/assets/f76f5acc-57a5-4832-8fef-b08b63a932f8" />
+<img width="1220" height="2410" alt="1000062019" src="https://github.com/user-attachments/assets/e8f0644b-408c-441b-bb7b-cf3407e0caa8" />
+
+
 
 ## ✨ Funktionen
 
