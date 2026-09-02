@@ -1886,24 +1886,27 @@ class AufgabenScoreboardManager:
         """
         Liefert wirklich alle Aufgaben, unabhängig vom Status.
 
-        WICHTIG - Kopien statt Referenzen:
-        Diese Methode speist u. a. das "alle_aufgaben"-Attribut des
-        Übersichts-Sensors, das Home Assistant bei jedem
-        async_write_ha_state() mit dem zuvor gespeicherten Zustand
-        vergleicht (old_state.attributes == neue_attribute), um zu
-        entscheiden, ob überhaupt ein state_changed-Event gefeuert wird.
-        Aufgaben werden in diesem Manager bewusst IN PLACE verändert
-        (z. B. async_update_task() setzt aufgabe["name"] = ... direkt
-        auf dem bestehenden Dict). Würden hier die Original-Dict-
-        Objekte zurückgegeben, würde eine spätere Bearbeitung
-        rückwirkend auch den bereits an HA übergebenen alten
-        Attribut-Snapshot "mit verändern" (Python hält Dicts per
-        Referenz) - der Gleichheitsvergleich sähe dann fälschlich
-        KEINEN Unterschied, HA würde kein Event feuern, und die
-        Bearbeitung bliebe im Frontend unsichtbar, bis sich zufällig
-        etwas anderes (z. B. die Aufgabenzahl durch add_task) ändert.
-        Mit copy.deepcopy() ist jeder zurückgegebene Snapshot
-        unabhängig von zukünftigen Mutationen der internen Daten.
+        WICHTIG: Wird aktuell von KEINER Sensor-Attribut-Ausgabe mehr
+        genutzt - das frühere "alle_aufgaben"-Attribut des
+        Übersichts-Sensors wurde entfernt, da es unbegrenzt wuchs (jede
+        jemals erledigte Aufgabe blieb dauerhaft in self._data["tasks"]
+        erhalten) und dadurch wiederholt Home Assistants
+        Recorder-Warnung "State attributes ... exceed maximum size of
+        16384 bytes" auslöste. Für die Admin-Verwaltung reicht
+        get_all_open_tasks() bereits vollständig aus (das
+        Bearbeiten-Formular im Panel ist ohnehin nur für offene Aufgaben
+        erreichbar). Diese Methode bleibt als allgemeiner Baustein
+        bestehen (z. B. für eine mögliche künftige Statistik-Funktion),
+        wird intern aber nirgends mehr aufgerufen.
+
+        Kopien statt Referenzen: Aufgaben werden in diesem Manager
+        bewusst IN PLACE verändert (z. B. async_update_task() setzt
+        aufgabe["name"] = ... direkt auf dem bestehenden Dict). Würden
+        hier die Original-Dict-Objekte zurückgegeben, könnte eine
+        spätere Bearbeitung rückwirkend auch bereits zurückgegebene
+        Snapshots verändern (Python hält Dicts per Referenz). Mit
+        copy.deepcopy() (über _mit_ueberfaelligkeit()) ist jeder
+        zurückgegebene Snapshot unabhängig von künftigen Mutationen.
         """
         return [self._mit_ueberfaelligkeit(a) for a in self._data["tasks"].values()]
 

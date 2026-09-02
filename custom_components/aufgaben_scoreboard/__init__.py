@@ -574,6 +574,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
                 SERVICE_DEDUCT_POINTS,
+                SERVICE_PERFORM_AWARDS,
                 SERVICE_RESET_WINS,
                 SERVICE_ADD_REWARD,
                 SERVICE_UPDATE_REWARD,

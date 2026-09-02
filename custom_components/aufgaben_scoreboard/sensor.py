@@ -194,8 +194,17 @@ class BenutzerPunkteSensor(_BasisSensor):
 class AlleOffenenAufgabenSensor(_BasisSensor):
     """
     Globale Übersichts-Entität: zeigt die Gesamtzahl aller aktuell
-    offenen Aufgaben als Zustand und die vollständige Aufgabenliste
-    (inklusive erledigter Aufgaben, für die Admin-Ansicht) als Attribut.
+    offenen Aufgaben als Zustand und die Liste dieser offenen Aufgaben
+    (für die Admin-Ansicht) als Attribut.
+
+    WICHTIG: Es werden bewusst NUR offene (und wartende) Aufgaben
+    exponiert, keine vollständige Historie aller jemals erledigten
+    Aufgaben. Letzteres wuchs unbegrenzt und führte zur wiederkehrenden
+    Recorder-Warnung "State attributes ... exceed maximum size of 16384
+    bytes" - der Admin-Bereich im Panel benötigt für die
+    Aufgaben-Verwaltung ohnehin ausschließlich offene Aufgaben (das
+    Bearbeiten-Formular ist nur für offene Aufgaben erreichbar), eine
+    zusätzliche "alle_aufgaben"-Liste war redundant.
     """
 
     _attr_icon = "mdi:format-list-checks"
@@ -216,7 +225,6 @@ class AlleOffenenAufgabenSensor(_BasisSensor):
         attribute = {
             "offene_aufgaben": self._manager.get_all_open_tasks(),
             "wartende_aufgaben": self._manager.get_all_pending_tasks(),
-            "alle_aufgaben": self._manager.get_all_tasks(),
             "vorlagen": self._manager.get_all_templates(),
         }
         if self._praemien_aktiviert:
