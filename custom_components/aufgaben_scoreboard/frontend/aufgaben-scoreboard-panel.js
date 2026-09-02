@@ -106,7 +106,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
       if (!entityId.startsWith("sensor.")) continue;
       const zustand = hass.states[entityId];
       const attrs = zustand.attributes || {};
-      if (attrs.user_id || Array.isArray(attrs.alle_aufgaben)) {
+      if (attrs.user_id || Array.isArray(attrs.vorlagen)) {
         teile.push(`${entityId}=${zustand.state}|${JSON.stringify(attrs)}`);
       }
     }
@@ -163,7 +163,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
       if (
         entityId.startsWith("sensor.") &&
         states[entityId].attributes &&
-        Array.isArray(states[entityId].attributes.alle_aufgaben)
+        Array.isArray(states[entityId].attributes.vorlagen)
       ) {
         return states[entityId];
       }
@@ -1027,15 +1027,18 @@ class AufgabenScoreboardPanel extends HTMLElement {
   }
 
   _renderAdminBereich(uebersichtsSensor, benutzerSensoren) {
-    const alleAufgaben = uebersichtsSensor ? uebersichtsSensor.attributes.alle_aufgaben : [];
-    const offeneAufgaben = alleAufgaben.filter((a) => a.status === "open");
+    // "offene_aufgaben" ist bereits auf offene Aufgaben begrenzt - ein
+    // zusätzlicher Client-seitiger Filter ist nicht mehr nötig, seit
+    // das separate (unbegrenzt wachsende) "alle_aufgaben"-Attribut
+    // entfernt wurde (siehe sensor.py).
+    const offeneAufgaben = uebersichtsSensor ? uebersichtsSensor.attributes.offene_aufgaben : [];
 
     // Wird gerade eine bestehende Aufgabe bearbeitet, deren Daten für die
     // Vorbelegung des Formulars heraussuchen. Existiert die Aufgabe nicht
     // mehr (z. B. zwischenzeitlich von jemand anderem gelöscht), sauber
     // in den "Neue Aufgabe"-Modus zurückfallen.
     const bearbeiteteAufgabe = this._bearbeiteTaskId
-      ? alleAufgaben.find((a) => a.id === this._bearbeiteTaskId)
+      ? offeneAufgaben.find((a) => a.id === this._bearbeiteTaskId)
       : null;
     if (this._bearbeiteTaskId && !bearbeiteteAufgabe) {
       this._bearbeiteTaskId = null;
