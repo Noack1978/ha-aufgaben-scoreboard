@@ -16,9 +16,11 @@ sauber testbar und getrennt von der eigentlichen Entity-Darstellung.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import homeassistant.util.dt as dt_util
@@ -47,6 +49,8 @@ from .const import (
     EVENT_TEMPLATE_ADDED,
     EVENT_TEMPLATE_REMOVED,
     EVENT_TEMPLATE_UPDATED,
+    PANEL_DATEN_DATEINAME,
+    PANEL_DATEN_ORDNER,
     REDEMPTION_STATUS_APPROVED,
     REDEMPTION_STATUS_PENDING,
     REDEMPTION_STATUS_REJECTED,
@@ -322,9 +326,28 @@ class AufgabenScoreboardManager:
             len(self._data["templates"]),
         )
 
+        # Panel-Daten-Datei einmalig direkt beim Start schreiben (nicht
+        # erst bei der ersten Änderung) - so existiert sie garantiert
+        # bereits beim allerersten Öffnen des Panels nach einem
+        # Neustart, auch wenn zwischenzeitlich noch nichts geändert
+        # wurde. Deckt außerdem den Fall ab, dass die Datei manuell
+        # gelöscht wurde: Beim nächsten Neustart entsteht sie
+        # automatisch neu aus den ohnehin vorhandenen, dauerhaft
+        # gespeicherten Daten.
+        await self._async_schreibe_panel_daten()
+
     async def _async_persist(self) -> None:
         """Speichert den aktuellen Stand dauerhaft und informiert Zuhörer."""
         await self._store.async_save(self._data)
+
+        # Die für das Panel relevanten (potenziell großen) Listen als
+        # JSON-Datei schreiben - siehe _async_schreibe_panel_daten() für
+        # den Hintergrund. Läuft bewusst NACH dem eigentlichen Speichern,
+        # aber VOR der Dispatcher-Benachrichtigung: Wenn das Panel auf
+        # das Update-Signal reagiert und die Datei neu abruft, muss sie
+        # zu diesem Zeitpunkt bereits den neuen Stand enthalten.
+        await self._async_schreibe_panel_daten()
+
         # Alle Sensor-Entitäten (und darüber das Frontend) benachrichtigen,
         # dass sich Daten geändert haben, damit der Zustand aktualisiert wird.
         #
@@ -342,6 +365,62 @@ class AufgabenScoreboardManager:
         # Aktualisierung robust, unabhängig davon, aus welchem Thread
         # _async_persist() letztlich angestoßen wird.
         self.hass.add_job(async_dispatcher_send, self.hass, SIGNAL_UPDATE)
+
+    def _panel_daten_snapshot(self) -> dict[str, Any]:
+        """
+        Baut die vollständige "Panel-Daten"-Struktur, die als JSON-Datei
+        geschrieben wird (siehe _async_schreibe_panel_daten()). Enthält
+        genau die Listen, die früher als Sensor-Attribute exponiert
+        wurden und die Home Assistants 16-KB-Grenze für Zustands-
+        attribute erreicht haben: offene/wartende Aufgaben,
+        Standardaufgaben (Vorlagen) und - sofern das Prämien-System
+        aktiviert ist, was der Manager selbst nicht weiß - IMMER
+        mitgeliefert (die Sensor-Attribut-Prüfung "praemien_aktiviert"
+        gibt es hier nicht, das Panel blendet die entsprechenden
+        Bereiche bei deaktiviertem Prämien-System selbst aus).
+        """
+        return {
+            "offene_aufgaben": self.get_all_open_tasks(),
+            "wartende_aufgaben": self.get_all_pending_tasks(),
+            "vorlagen": self.get_all_templates(),
+            "praemien": self.get_all_rewards(),
+            "wartende_praemien": self.get_pending_redemptions(),
+        }
+
+    async def _async_schreibe_panel_daten(self) -> None:
+        """
+        Schreibt _panel_daten_snapshot() als JSON-Datei nach
+        config/www/aufgaben_scoreboard/daten.json - Home Assistant
+        liefert den kompletten Inhalt von config/www/ automatisch und
+        ohne jede eigene Registrierung unter /local/ aus (offiziell
+        dokumentierter, seit Jahren stabiler Mechanismus). Das Panel
+        ruft die Datei per fetch() ab, sobald sich einer der fünf
+        Zähler-Sensoren ändert (siehe sensor.py) - dadurch bleibt die
+        Datenmenge komplett unabhängig von Home Assistants
+        16-KB-Grenze für Zustandsattribute.
+
+        WICHTIG: Verzeichnis-Erstellung und Datei-Schreiben sind
+        blockierende Datei-I/O-Operationen - beide laufen deshalb über
+        hass.async_add_executor_job() in einem separaten Thread, damit
+        der Event-Loop nicht blockiert wird (siehe
+        AufgabenScoreboardManager-Klassen-Docstring).
+        """
+        pfad = Path(self.hass.config.path("www", PANEL_DATEN_ORDNER, PANEL_DATEN_DATEINAME))
+        daten = self._panel_daten_snapshot()
+        try:
+            await self.hass.async_add_executor_job(self._schreibe_panel_daten_datei, pfad, daten)
+        except OSError as fehler:
+            # Bewusst nur loggen, nicht den ganzen Vorgang (der ja bereits
+            # erfolgreich in der eigentlichen Storage-Datei gespeichert
+            # wurde) fehlschlagen lassen - die Panel-Datei ist eine reine
+            # Ableitung, kein Verlust der eigentlichen Daten.
+            _LOGGER.error("Panel-Datendatei '%s' konnte nicht geschrieben werden: %s", pfad, fehler)
+
+    @staticmethod
+    def _schreibe_panel_daten_datei(pfad: Path, daten: dict[str, Any]) -> None:
+        """Synchroner Datei-Schreibvorgang - NUR über async_add_executor_job() aufrufen, nie direkt."""
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        pfad.write_text(json.dumps(daten, ensure_ascii=False), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Aufgaben anlegen / löschen / zuweisen
@@ -544,7 +623,20 @@ class AufgabenScoreboardManager:
         self.hass.add_job(
             self.hass.bus.async_fire,
             EVENT_TASK_COMPLETION_REQUESTED,
-            {"task_id": task_id, "user_id": user_id},
+            {
+                "task_id": task_id,
+                "user_id": user_id,
+                # "name"/"score" direkt mitgeben (wie bei den übrigen
+                # Aufgaben-Events auch) - damit Automationen (z. B. eine
+                # Freigabe-Benachrichtigung) den Aufgabennamen NICHT mehr
+                # per state_attr() aus einem Sensor-Attribut nachschlagen
+                # müssen. Das war nötig, seit die entsprechenden Listen
+                # ausschließlich noch über die Panel-Daten-JSON-Datei
+                # bereitstehen, für Automationen aber weiterhin bequem
+                # per Event verfügbar sein sollen.
+                "name": aufgabe["name"],
+                "score": aufgabe["score"],
+            },
         )
         _LOGGER.info(
             "Aufgabe '%s' wurde von Benutzer '%s' als erledigt gemeldet - wartet auf Freigabe.",
@@ -1025,7 +1117,15 @@ class AufgabenScoreboardManager:
         self.hass.add_job(
             self.hass.bus.async_fire,
             EVENT_REWARD_REDEMPTION_REQUESTED,
-            {"reward_id": reward_id, "user_id": user_id},
+            {
+                "reward_id": reward_id,
+                "user_id": user_id,
+                # "reward_name"/"cost" direkt mitgeben - aus demselben
+                # Grund wie bei EVENT_TASK_COMPLETION_REQUESTED (siehe
+                # dortigen Kommentar).
+                "reward_name": praemie["name"],
+                "cost": praemie["cost"],
+            },
         )
         _LOGGER.info(
             "Benutzer '%s' hat Prämie '%s' angefragt - wartet auf Freigabe.", user_id, praemie["name"]

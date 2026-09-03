@@ -233,10 +233,41 @@ PANEL_ICON = "mdi:star-check-outline"
 # (ein Sensor pro Benutzer) eindeutig benannt werden.
 USER_SENSOR_UNIQUE_ID_PREFIX = f"{DOMAIN}_user_"
 
-# Unique-ID der globalen Sensor-Entität, die ALLE offenen Aufgaben
-# (unabhängig vom Benutzer) als Attribut bereitstellt. Wird u. a. vom
-# Sidebar-Panel für die Admin-/Übersichtsansicht verwendet.
+# Unique-ID der globalen Sensor-Entität, die die Anzahl ALLER offenen
+# Aufgaben (unabhängig vom Benutzer) als Zustand liefert. Die
+# eigentliche Aufgabenliste steht NICHT mehr als Attribut zur
+# Verfügung (siehe PANEL_DATEN_DATEINAME) - dieser Sensor dient nur
+# noch als Live-Signal, damit das Panel weiß, WANN es die aktuellen
+# Daten neu abrufen muss.
 ALL_TASKS_SENSOR_UNIQUE_ID = f"{DOMAIN}_alle_offenen_aufgaben"
+
+# Analoge reine Zähler-Sensoren für die übrigen, potenziell großen
+# Datenmengen (siehe Docstring von AufgabenScoreboardManager für den
+# Hintergrund: Speicherung der eigentlichen Daten als JSON-Datei statt
+# als Sensor-Attribut, um die Home-Assistant-Grenze von 16 KB pro
+# Zustandsattribut nicht zu erreichen).
+STANDARDAUFGABEN_SENSOR_UNIQUE_ID = f"{DOMAIN}_standardaufgaben"
+PRAEMIEN_SENSOR_UNIQUE_ID = f"{DOMAIN}_praemien"
+WARTENDE_AUFGABEN_SENSOR_UNIQUE_ID = f"{DOMAIN}_wartende_aufgaben"
+WARTENDE_PRAEMIEN_SENSOR_UNIQUE_ID = f"{DOMAIN}_wartende_praemien"
+
+# Kleines, eindeutiges Marker-Attribut (einzelner String, keine Liste),
+# über das das Panel-JS die fünf Zähler-Sensoren dieser Integration
+# unter allen "sensor."-Entitäten zuverlässig wiederfindet - unabhängig
+# von Sprache/Anzeigename. Wert = jeweils einer der SENSOR_KIND_*-Werte.
+ATTR_SENSOR_KIND = "aufgaben_scoreboard_sensor_kind"
+SENSOR_KIND_OFFENE_AUFGABEN = "offene_aufgaben"
+SENSOR_KIND_STANDARDAUFGABEN = "standardaufgaben"
+SENSOR_KIND_PRAEMIEN = "praemien"
+SENSOR_KIND_WARTENDE_AUFGABEN = "wartende_aufgaben"
+SENSOR_KIND_WARTENDE_PRAEMIEN = "wartende_praemien"
+
+# Datei, in der die eigentlichen (potenziell großen) Panel-Daten als
+# JSON abgelegt werden - unter config/www/, damit Home Assistant sie
+# automatisch und ohne jede eigene Registrierung unter /local/ ausliefert
+# (derselbe, offiziell dokumentierte Mechanismus wie bei ha-rezepte).
+PANEL_DATEN_ORDNER = DOMAIN
+PANEL_DATEN_DATEINAME = "daten.json"
 
 # -----------------------------------------------------------------------
 # Options-Flow: Auswahl, welche Home-Assistant-Benutzer von dieser

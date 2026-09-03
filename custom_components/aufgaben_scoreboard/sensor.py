@@ -7,10 +7,34 @@ Erzeugt:
       oder Supervisor-Benutzer) einen Sensor, dessen Zustand der
       aktuelle Punktestand ist. Als Attribute stehen die für den
       Benutzer offenen Aufgaben sowie der zuletzt erledigte Verlauf
-      zur Verfügung.
-    - Eine zusätzliche globale Übersichts-Entität, die ALLE offenen
-      Aufgaben (unabhängig vom Benutzer) auflistet. Diese wird u. a.
-      vom Sidebar-Panel für die Admin-/Gesamtübersicht verwendet.
+      zur Verfügung (diese Listen bleiben klein/begrenzt - siehe
+      manager.py, get_completed_tasks_for_user() u. Ä. - und sind
+      NICHT vom unten beschriebenen Problem betroffen).
+    - Fünf globale, REINE Zähler-Entitäten (offene Aufgaben,
+      Standardaufgaben, Prämien, wartende Aufgaben-Freigaben, wartende
+      Prämien-Freigaben) - jede zeigt nur eine Zahl als Zustand plus
+      ein einziges kleines Marker-Attribut, KEINE Listen mehr.
+
+WICHTIG - Architekturentscheidung ab Version 2.0.0:
+    Die eigentlichen (potenziell großen) Datenlisten - offene/wartende
+    Aufgaben, Standardaufgaben-Vorlagen, Prämien - stehen NICHT mehr
+    als Sensor-Attribut zur Verfügung. Sie wuchsen mit der Zeit (mehr
+    Vorlagen, mehr gleichzeitig offene Aufgaben, viele optionale Felder
+    pro Eintrag durch Fälligkeit/Erinnerung/Trigger) über Home
+    Assistants Grenze von 16 KB pro Zustandsattribut hinaus, was zu
+    der wiederkehrenden Recorder-Warnung "State attributes ... exceed
+    maximum size of 16384 bytes" führte.
+
+    Stattdessen schreibt der Manager diese Daten als JSON-Datei nach
+    config/www/aufgaben_scoreboard/daten.json (siehe
+    AufgabenScoreboardManager._async_schreibe_panel_daten()) - Home
+    Assistant liefert den Inhalt von config/www/ automatisch und ohne
+    jede eigene Registrierung unter /local/ aus, ganz ohne
+    Größenbegrenzung. Das Sidebar-Panel ruft diese Datei per fetch()
+    ab und tut das genau dann erneut, wenn sich einer der fünf hier
+    definierten Zähler-Sensoren ändert - die Sensoren dienen also nur
+    noch als leichtgewichtiges "es hat sich etwas geändert"-Signal,
+    nicht mehr als Datenquelle selbst.
 
 Alle Entitäten reagieren über den Home-Assistant-Dispatcher (Signal
 SIGNAL_UPDATE) sofort auf Änderungen, die der AufgabenScoreboardManager
@@ -31,11 +55,21 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     ALL_TASKS_SENSOR_UNIQUE_ID,
+    ATTR_SENSOR_KIND,
     DOMAIN,
     OPTION_ENABLED_USERS,
     OPTION_REWARDS_ENABLED,
+    PRAEMIEN_SENSOR_UNIQUE_ID,
+    SENSOR_KIND_OFFENE_AUFGABEN,
+    SENSOR_KIND_PRAEMIEN,
+    SENSOR_KIND_STANDARDAUFGABEN,
+    SENSOR_KIND_WARTENDE_AUFGABEN,
+    SENSOR_KIND_WARTENDE_PRAEMIEN,
     SIGNAL_UPDATE,
+    STANDARDAUFGABEN_SENSOR_UNIQUE_ID,
     USER_SENSOR_UNIQUE_ID_PREFIX,
+    WARTENDE_AUFGABEN_SENSOR_UNIQUE_ID,
+    WARTENDE_PRAEMIEN_SENSOR_UNIQUE_ID,
 )
 from .manager import AufgabenScoreboardManager
 
@@ -51,11 +85,19 @@ async def async_setup_entry(
     manager: AufgabenScoreboardManager = hass.data[DOMAIN][entry.entry_id]
 
     # Prämien-System ist standardmäßig deaktiviert - nur wenn im
-    # Options-Flow explizit aktiviert, bekommen die Sensoren die
-    # entsprechenden Attribute (Punktekonto, wartende Einlösungen, ...).
+    # Options-Flow explizit aktiviert, bekommen die Benutzer-Sensoren
+    # die entsprechenden Attribute UND werden die beiden
+    # Prämien-bezogenen Zähler-Sensoren überhaupt angelegt.
     praemien_aktiviert = entry.options.get(OPTION_REWARDS_ENABLED, False)
 
-    entitaeten: list[SensorEntity] = [AlleOffenenAufgabenSensor(manager, entry, praemien_aktiviert)]
+    entitaeten: list[SensorEntity] = [
+        AlleOffenenAufgabenSensor(manager, entry),
+        StandardaufgabenSensor(manager, entry),
+        WartendeAufgabenSensor(manager, entry),
+    ]
+    if praemien_aktiviert:
+        entitaeten.append(PraemienSensor(manager, entry))
+        entitaeten.append(WartendePraemienSensor(manager, entry))
 
     # Welche Benutzer berücksichtigt werden, kann über den Options-Flow
     # ("Konfigurieren" bei der Integration) eingeschränkt werden - z. B.
@@ -151,6 +193,11 @@ class BenutzerPunkteSensor(_BasisSensor):
         - user_id: Die interne Home-Assistant-Benutzer-ID (wird vom
           Sidebar-Panel benötigt, um Sensoren Benutzern zuzuordnen und
           Service-Aufrufe korrekt zu adressieren).
+
+    WICHTIG: Diese personenbezogenen Listen bleiben - anders als die
+    fünf globalen Zähler-Sensoren unten - weiterhin echte Attribute.
+    Sie sind serverseitig bereits auf 20-30 Einträge begrenzt (siehe
+    manager.py) und waren nie Teil des 16-KB-Problems.
     """
 
     _attr_icon = "mdi:star-check-outline"
@@ -191,44 +238,99 @@ class BenutzerPunkteSensor(_BasisSensor):
         return attribute
 
 
-class AlleOffenenAufgabenSensor(_BasisSensor):
+class _ZaehlerSensor(_BasisSensor):
     """
-    Globale Übersichts-Entität: zeigt die Gesamtzahl aller aktuell
-    offenen Aufgaben als Zustand und die Liste dieser offenen Aufgaben
-    (für die Admin-Ansicht) als Attribut.
+    Gemeinsame Basisklasse für die fünf globalen, reinen Zähler-Sensoren
+    (siehe Datei-Docstring für den architektonischen Hintergrund).
 
-    WICHTIG: Es werden bewusst NUR offene (und wartende) Aufgaben
-    exponiert, keine vollständige Historie aller jemals erledigten
-    Aufgaben. Letzteres wuchs unbegrenzt und führte zur wiederkehrenden
-    Recorder-Warnung "State attributes ... exceed maximum size of 16384
-    bytes" - der Admin-Bereich im Panel benötigt für die
-    Aufgaben-Verwaltung ohnehin ausschließlich offene Aufgaben (das
-    Bearbeiten-Formular ist nur für offene Aufgaben erreichbar), eine
-    zusätzliche "alle_aufgaben"-Liste war redundant.
+    Jeder Zähler-Sensor hat außer der Anzahl NUR EIN Attribut -
+    "aufgaben_scoreboard_sensor_kind" - über das das Panel-JS die fünf
+    Sensoren unter allen "sensor."-Entitäten zuverlässig unterscheiden
+    kann, unabhängig von Sprache/Anzeigename der jeweiligen Entität.
     """
+
+    _attr_native_unit_of_measurement = "Stück"
+
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry, sensor_kind: str) -> None:
+        super().__init__(manager, entry)
+        self._sensor_kind = sensor_kind
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {ATTR_SENSOR_KIND: self._sensor_kind}
+
+
+class AlleOffenenAufgabenSensor(_ZaehlerSensor):
+    """Zeigt die Anzahl aller aktuell offenen Aufgaben (unabhängig vom Benutzer)."""
 
     _attr_icon = "mdi:format-list-checks"
     _attr_name = "Offene Aufgaben (Alle Benutzer)"
-    _attr_native_unit_of_measurement = "Aufgaben"
 
-    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry, praemien_aktiviert: bool = False) -> None:
-        super().__init__(manager, entry)
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, SENSOR_KIND_OFFENE_AUFGABEN)
         self._attr_unique_id = ALL_TASKS_SENSOR_UNIQUE_ID
-        self._praemien_aktiviert = praemien_aktiviert
 
     @property
     def native_value(self) -> int:
         return len(self._manager.get_all_open_tasks())
 
+
+class StandardaufgabenSensor(_ZaehlerSensor):
+    """Zeigt die Anzahl konfigurierter Standardaufgaben (Vorlagen)."""
+
+    _attr_icon = "mdi:repeat"
+    _attr_name = "Standardaufgaben"
+
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, SENSOR_KIND_STANDARDAUFGABEN)
+        self._attr_unique_id = STANDARDAUFGABEN_SENSOR_UNIQUE_ID
+
     @property
-    def extra_state_attributes(self) -> dict:
-        attribute = {
-            "offene_aufgaben": self._manager.get_all_open_tasks(),
-            "wartende_aufgaben": self._manager.get_all_pending_tasks(),
-            "vorlagen": self._manager.get_all_templates(),
-        }
-        if self._praemien_aktiviert:
-            attribute["praemien"] = self._manager.get_all_rewards()
-            attribute["wartende_praemien"] = self._manager.get_pending_redemptions()
-        return attribute
+    def native_value(self) -> int:
+        return len(self._manager.get_all_templates())
+
+
+class PraemienSensor(_ZaehlerSensor):
+    """Zeigt die Anzahl konfigurierter Prämien. Nur angelegt, wenn das Prämien-System aktiviert ist."""
+
+    _attr_icon = "mdi:gift"
+    _attr_name = "Prämien"
+
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, SENSOR_KIND_PRAEMIEN)
+        self._attr_unique_id = PRAEMIEN_SENSOR_UNIQUE_ID
+
+    @property
+    def native_value(self) -> int:
+        return len(self._manager.get_all_rewards())
+
+
+class WartendeAufgabenSensor(_ZaehlerSensor):
+    """Zeigt die Anzahl der Aufgaben, die aktuell auf Admin-Freigabe warten (alle Benutzer)."""
+
+    _attr_icon = "mdi:clock-alert-outline"
+    _attr_name = "Wartende Aufgaben"
+
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, SENSOR_KIND_WARTENDE_AUFGABEN)
+        self._attr_unique_id = WARTENDE_AUFGABEN_SENSOR_UNIQUE_ID
+
+    @property
+    def native_value(self) -> int:
+        return len(self._manager.get_all_pending_tasks())
+
+
+class WartendePraemienSensor(_ZaehlerSensor):
+    """Zeigt die Anzahl der Prämien-Einlösungen, die aktuell auf Admin-Freigabe warten. Nur bei aktiviertem Prämien-System."""
+
+    _attr_icon = "mdi:clock-alert-outline"
+    _attr_name = "Wartende Prämien"
+
+    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, SENSOR_KIND_WARTENDE_PRAEMIEN)
+        self._attr_unique_id = WARTENDE_PRAEMIEN_SENSOR_UNIQUE_ID
+
+    @property
+    def native_value(self) -> int:
+        return len(self._manager.get_pending_redemptions())
 
