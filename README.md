@@ -144,8 +144,10 @@ Einträge werden im Verlauf weiterhin angezeigt, aber ohne
 Für beide Freigabe-Arten (Aufgaben und Prämien-Einlösungen) werden
 eigene Events gefeuert, sobald eine Anfrage entsteht:
 `aufgaben_scoreboard_task_completion_requested` bzw.
-`aufgaben_scoreboard_reward_redemption_requested`. Damit lässt sich
-schon heute eine Benachrichtigungs-Automation bauen:
+`aufgaben_scoreboard_reward_redemption_requested`. Beide Events liefern
+Name und Punktwert bereits direkt mit – kein zusätzlicher Nachschlag
+in Sensor-Attributen nötig. Damit lässt sich schon heute eine
+Benachrichtigungs-Automation bauen:
 
 ```yaml
 alias: Aufgaben-Punktesystem – Freigabe erforderlich
@@ -172,13 +174,9 @@ actions:
         {% endif %}
       nachricht: >-
         {% if trigger.id == 'aufgabe' %}
-          {% set tid = trigger.event.data.task_id %}
-          {% set aufgabe = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'wartende_aufgaben') | selectattr('id', 'eq', tid) | first %}
-          {{ benutzer_name }} hat "{{ aufgabe.name if aufgabe else 'eine Aufgabe' }}" als erledigt gemeldet.
+          {{ benutzer_name }} hat "{{ trigger.event.data.name }}" als erledigt gemeldet.
         {% else %}
-          {% set rid = trigger.event.data.reward_id %}
-          {% set eintrag = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'wartende_praemien') | selectattr('reward_id', 'eq', rid) | selectattr('user_id', 'eq', trigger.event.data.user_id) | first %}
-          {{ benutzer_name }} möchte "{{ eintrag.reward_name if eintrag else 'eine Prämie' }}" einlösen.
+          {{ benutzer_name }} möchte "{{ trigger.event.data.reward_name }}" einlösen.
         {% endif %}
   - action: notify.send_message
     target:
@@ -407,64 +405,16 @@ resources:
     type: module
 ```
 
-### Aufgaben im Dashboard anzeigen (Markdown-Karte)
+### Aufgaben im Dashboard anzeigen
 
-Alternative zur Custom Card oben: Eine Übersicht **aller** offenen
-Aufgaben (nicht nur der eigenen) lässt sich auch mit einer **nativen
-Markdown-Karte** abbilden - kein Custom Element, keine zusätzliche
-JavaScript-Registrierung nötig. Neue Karte → **Markdown** → in den
-YAML-Modus wechseln und folgenden Code einfügen:
-
-```yaml
-type: markdown
-title: 📋 Alle offenen Aufgaben
-content: |
-  {% set aufgaben = state_attr('sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer', 'offene_aufgaben') %}
-  {% set benutzer_sensoren = states.sensor | selectattr('attributes.user_id', 'defined') | list %}
-  {%- if not aufgaben %}
-  Aktuell keine offenen Aufgaben. 🎉
-  {%- else %}
-  **{{ aufgaben | length }} offene Aufgabe(n)**
-
-  | Aufgabe | Punkte | Zuständig |
-  | --- | --- | --- |
-  {% for aufgabe in aufgaben | sort(attribute='name') -%}
-  {%- set ns = namespace(namen=[]) -%}
-  {%- for uid in aufgabe.assigned_to -%}
-  {%- for b in benutzer_sensoren -%}
-  {%- if b.attributes.user_id == uid -%}
-  {%- set ns.namen = ns.namen + [b.name] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {%- endfor -%}
-  | {{ aufgabe.name }}{% if aufgabe.description %} ({{ aufgabe.description }}){% endif %} | +{{ aufgabe.score }} | {{ ns.namen | join(', ') if ns.namen else 'Alle Benutzer' }} |
-  {% endfor -%}
-  {%- endif %}
-```
-
-**Hinweis zur Entity-ID:** `sensor.aufgaben_punktesystem_offene_aufgaben_alle_benutzer`
-ist die Entity-ID des Übersichts-Sensors. Falls sie bei dir abweicht
-(z. B. durch ein Namenskollisions-Suffix), in **Entwicklerwerkzeuge →
-Zustände** nach "Offene Aufgaben" suchen und die erste Zeile im obigen
-Code entsprechend anpassen.
-
-**Optional - Spaltenbreiten anpassen:** Falls [`card_mod`](https://github.com/thomasloven/lovelace-card-mod)
-installiert ist, lässt sich die Tabellenbreite pro Spalte festlegen:
-
-```yaml
-card_mod:
-  style:
-    ha-markdown$: |
-      table {
-        table-layout: fixed;
-        width: 100%;
-      }
-      th:nth-child(1), td:nth-child(1) { width: 55%; }
-      th:nth-child(2), td:nth-child(2) { width: 15%; }
-      th:nth-child(3), td:nth-child(3) { width: 30%; }
-```
-
-Die Prozentwerte nach Bedarf anpassen (sollten zusammen ~100% ergeben).
+Seit Version 2.0.0 stehen offene Aufgaben, Standardaufgaben und
+Prämien **nicht mehr als Vorlagen-lesbares Sensor-Attribut** zur
+Verfügung (sie werden stattdessen als JSON-Datei ausgeliefert und vom
+Sidebar-Panel direkt abgerufen - siehe Abschnitt „Wie die Daten
+gespeichert werden" weiter unten für den Hintergrund). Eine Markdown-
+Karte mit `state_attr(...)` kann darauf deshalb nicht mehr zugreifen.
+Für eine Übersicht offener Aufgaben im Dashboard steht die **Custom
+Card** oben zur Verfügung.
 
 ### Aufgaben per Automation/Skript anlegen
 
@@ -519,6 +469,30 @@ Alle Aufgaben, Zuweisungen, Punktestände und der Erledigungsverlauf
 werden lokal über den Home-Assistant-eigenen Storage-Mechanismus in
 `.storage/aufgaben_scoreboard_data` gespeichert. Ein Backup dieser
 Datei sichert den gesamten Zustand der Integration.
+
+**Seit Version 2.0.0** wird zusätzlich eine JSON-Datei unter
+`config/www/aufgaben_scoreboard/daten.json` geschrieben - sie enthält
+ausschließlich die Daten, die das Sidebar-Panel für offene/wartende
+Aufgaben, Standardaufgaben und Prämien benötigt, und wird bei jeder
+Änderung automatisch aktualisiert. Der Hintergrund: Diese Listen
+wuchsen mit der Zeit (mehr Standardaufgaben, mehr optionale Felder pro
+Eintrag durch Fälligkeit/Erinnerung/Trigger) über Home Assistants
+Grenze von 16 KB pro Zustandsattribut hinaus, was zur wiederkehrenden
+Recorder-Warnung *"State attributes ... exceed maximum size of 16384
+bytes"* führte. Fünf schlanke Zähler-Sensoren (nur eine Zahl als
+Zustand) signalisieren dem Panel, wann es die JSON-Datei neu abrufen
+muss - die eigentlichen Daten selbst stehen dadurch **nicht mehr** als
+Sensor-Attribut zur Verfügung (betrifft `offene_aufgaben`,
+`wartende_aufgaben`, `vorlagen`, `praemien`, `wartende_praemien` des
+früheren Übersichts-Sensors). Die personenbezogenen Listen an den
+Benutzer-Punkte-Sensoren (`erledigte_aufgaben`, `eigene_praemien_verlauf`
+usw.) sind davon **nicht** betroffen - sie sind bereits auf 20-30
+Einträge begrenzt und bleiben normale Sensor-Attribute.
+
+Diese JSON-Datei ist eine reine Ableitung, keine eigenständige
+Datenquelle - ein Backup ist dafür nicht nötig, sie wird beim nächsten
+Neustart automatisch aus `.storage/aufgaben_scoreboard_data` neu
+erzeugt.
 
 ## 🛠️ Entwicklung / Aufbau des Codes
 
