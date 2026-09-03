@@ -64,6 +64,28 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // Merkt sich, für welchen Benutzer (falls überhaupt) das kleine
     // "Punkte abziehen"-Inline-Formular gerade offen ist - null = keins.
     this._punkteAbziehenUserId = null;
+    // Zwischengespeicherte "große" Panel-Daten (offene/wartende
+    // Aufgaben, Standardaufgaben, Prämien) - werden NICHT mehr aus
+    // Sensor-Attributen gelesen (seit Version 2.0.0), sondern per
+    // fetch() aus config/www/aufgaben_scoreboard/daten.json geladen
+    // (siehe _aktualisierePanelDaten()). Mit sinnvollen Leerwerten
+    // vorbelegt, damit alle Render-Funktionen auch VOR dem ersten
+    // erfolgreichen Abruf ohne Sonderfallbehandlung funktionieren.
+    this._panelDaten = {
+      offene_aufgaben: [],
+      wartende_aufgaben: [],
+      vorlagen: [],
+      praemien: [],
+      wartende_praemien: [],
+    };
+    // Merkt sich einen "Fingerabdruck" NUR der fünf Zähler-Sensoren
+    // (siehe _berechneZaehlerSignatur()) - ändert sich dieser, müssen
+    // die eigentlichen (großen) Panel-Daten per fetch() neu geladen
+    // werden. Getrennt von _letzteSignatur, weil nicht JEDE
+    // Neuzeichnung (z. B. ein reiner Punktestand-Wechsel) auch einen
+    // neuen fetch()-Aufruf rechtfertigt. Startwert null markiert "noch
+    // nie geladen" - erzwingt den allerersten Abruf beim Start.
+    this._letzteZaehlerSignatur = null;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -81,10 +103,29 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * Entitäts-Zustände). Wir speichern die Referenz immer (wird für
    * Service-Aufrufe benötigt), rendern die Oberfläche aber nur neu,
    * wenn sich die für uns relevanten Daten tatsächlich geändert haben.
+   *
+   * Zusätzlich (seit Version 2.0.0): Ändert sich speziell einer der
+   * fünf Zähler-Sensoren, werden die "großen" Panel-Daten (offene/
+   * wartende Aufgaben, Standardaufgaben, Prämien) per fetch() aus der
+   * JSON-Datei neu geladen - diese stehen nicht mehr als Sensor-
+   * Attribut zur Verfügung (siehe Klassen-Docstring von sensor.py für
+   * den Hintergrund: Home Assistants 16-KB-Grenze pro Zustandsattribut).
    */
   set hass(hass) {
     this._hass = hass;
     const signatur = this._berechneSignatur(hass);
+    const zaehlerSignatur = this._berechneZaehlerSignatur(hass);
+    const zaehlerHatSichGeaendert = zaehlerSignatur !== this._letzteZaehlerSignatur;
+
+    if (zaehlerHatSichGeaendert) {
+      this._letzteZaehlerSignatur = zaehlerSignatur;
+      // Bewusst NICHT auf das Ergebnis warten (kein await/then vor dem
+      // weiteren Verlauf dieser Methode) - der fetch()-Aufruf rendert
+      // am Ende selbst neu (siehe _aktualisierePanelDaten()). So bleibt
+      // set hass() selbst synchron, wie von Home Assistant erwartet.
+      this._aktualisierePanelDaten();
+    }
+
     if (signatur === this._letzteSignatur) {
       return;
     }
@@ -93,10 +134,40 @@ class AufgabenScoreboardPanel extends HTMLElement {
   }
 
   /**
+   * Lädt die "großen" Panel-Daten per fetch() aus
+   * config/www/aufgaben_scoreboard/daten.json (von Home Assistant
+   * automatisch unter /local/ ausgeliefert, siehe
+   * AufgabenScoreboardManager._async_schreibe_panel_daten() für den
+   * Hintergrund) und rendert anschließend neu.
+   *
+   * WICHTIG: "cache: no-store" ist hier kein Detail, sondern
+   * notwendig - ohne diese Angabe würde der Browser die Datei nach dem
+   * ersten Abruf aggressiv zwischenspeichern und spätere Änderungen
+   * (neue Aufgabe, Freigabe, ...) nicht mehr bemerken, obwohl der
+   * Zähler-Sensor sich korrekt geändert hat.
+   */
+  async _aktualisierePanelDaten() {
+    try {
+      const antwort = await fetch("/local/aufgaben_scoreboard/daten.json", { cache: "no-store" });
+      if (!antwort.ok) {
+        throw new Error(`HTTP ${antwort.status}`);
+      }
+      this._panelDaten = await antwort.json();
+    } catch (fehler) {
+      // Bewusst NICHT this._panelDaten zurücksetzen - die zuletzt
+      // erfolgreich geladenen (ggf. leicht veralteten) Daten weiter
+      // anzuzeigen ist besser, als das Panel bei einem einzelnen
+      // fehlgeschlagenen Abruf komplett zu leeren.
+      console.error("Aufgaben-Scoreboard: Panel-Daten konnten nicht geladen werden.", fehler);
+    }
+    this._render();
+  }
+
+  /**
    * Erstellt eine kompakte Zeichenkette aus allen für dieses Panel
-   * relevanten Entitäts-Zuständen (unsere Punkte-Sensoren + die
-   * Übersichts-Entität) sowie den Admin-Status des Benutzers. Ändert
-   * sich diese Zeichenkette nicht, gibt es für das Panel nichts neu zu
+   * relevanten Entitäts-Zuständen (unsere Punkte-Sensoren + die fünf
+   * Zähler-Sensoren) sowie den Admin-Status des Benutzers. Ändert sich
+   * diese Zeichenkette nicht, gibt es für das Panel nichts neu zu
    * zeichnen.
    */
   _berechneSignatur(hass) {
@@ -106,13 +177,37 @@ class AufgabenScoreboardPanel extends HTMLElement {
       if (!entityId.startsWith("sensor.")) continue;
       const zustand = hass.states[entityId];
       const attrs = zustand.attributes || {};
-      if (attrs.user_id || Array.isArray(attrs.vorlagen)) {
+      if (attrs.user_id || attrs.aufgaben_scoreboard_sensor_kind) {
         teile.push(`${entityId}=${zustand.state}|${JSON.stringify(attrs)}`);
       }
     }
     teile.sort();
     teile.push(`admin=${hass.user ? hass.user.is_admin : ""}`);
     teile.push(`uid=${hass.user ? hass.user.id : ""}`);
+    return teile.join("~~");
+  }
+
+  /**
+   * Wie _berechneSignatur(), aber ausschließlich auf Basis der fünf
+   * schlanken Zähler-Sensoren (Zustand + deren einziges Marker-
+   * Attribut) - entscheidet, WANN die großen Panel-Daten per fetch()
+   * neu geladen werden müssen (siehe set hass()). Bewusst getrennt von
+   * _berechneSignatur(): nicht jede Neuzeichnung (z. B. ein reiner
+   * Punktestand-Wechsel eines Benutzer-Sensors) rechtfertigt auch
+   * einen neuen fetch()-Aufruf.
+   */
+  _berechneZaehlerSignatur(hass) {
+    if (!hass) return "";
+    const teile = [];
+    for (const entityId in hass.states) {
+      if (!entityId.startsWith("sensor.")) continue;
+      const zustand = hass.states[entityId];
+      const attrs = zustand.attributes || {};
+      if (attrs.aufgaben_scoreboard_sensor_kind) {
+        teile.push(`${entityId}=${zustand.state}`);
+      }
+    }
+    teile.sort();
     return teile.join("~~");
   }
 
@@ -156,19 +251,26 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return ergebnis;
   }
 
-  _findeUebersichtsSensor() {
-    if (!this._hass) return null;
+  /**
+   * Prüft, ob das Prämien-System aktiviert ist - erkennbar daran, dass
+   * der "Prämien"-Zähler-Sensor überhaupt existiert (er wird nur
+   * angelegt, wenn die Option im Options-Flow aktiviert ist, siehe
+   * sensor.py async_setup_entry()). Ersetzt die frühere Prüfung über
+   * ein Sensor-Attribut, das es seit Version 2.0.0 nicht mehr gibt.
+   */
+  _praemienAktiviert() {
+    if (!this._hass) return false;
     const states = this._hass.states;
     for (const entityId in states) {
       if (
         entityId.startsWith("sensor.") &&
         states[entityId].attributes &&
-        Array.isArray(states[entityId].attributes.vorlagen)
+        states[entityId].attributes.aufgaben_scoreboard_sensor_kind === "praemien"
       ) {
-        return states[entityId];
+        return true;
       }
     }
-    return null;
+    return false;
   }
 
   // -----------------------------------------------------------------
@@ -393,7 +495,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
     const istAdmin = this._istAdmin();
     const benutzerSensoren = this._sammleBenutzerSensoren();
-    const uebersichtsSensor = this._findeUebersichtsSensor();
+    // "panelDaten" ersetzt seit Version 2.0.0 den früheren
+    // Übersichts-Sensor als Datenquelle für offene/wartende Aufgaben,
+    // Standardaufgaben und Prämien - siehe Klassen-Docstring von
+    // sensor.py bzw. _aktualisierePanelDaten() für den Hintergrund.
+    const panelDaten = this._panelDaten;
+    const praemienAktiviert = this._praemienAktiviert();
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
 
     // Tab-Definitionen: "benutzer" ist für ALLE sichtbar, alle
@@ -530,7 +637,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
             ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
           </div>
 
-          ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor)}
+          ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten)}
         `
             : ""
         }
@@ -538,14 +645,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
         ${
           istAdmin && this._aktiverTab === "freigaben"
             ? `
-          ${this._renderFreigabeBereich(uebersichtsSensor, benutzerSensoren)}
-          ${this._renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren)}
+          ${this._renderFreigabeBereich(panelDaten, benutzerSensoren)}
+          ${this._renderPraemienFreigabeBereich(panelDaten, benutzerSensoren, praemienAktiviert)}
         `
             : ""
         }
-        ${istAdmin && this._aktiverTab === "verwaltung" ? this._renderAdminBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin && this._aktiverTab === "vorlagen" ? this._renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) : ""}
-        ${istAdmin && this._aktiverTab === "praemien" ? this._renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "verwaltung" ? this._renderAdminBereich(panelDaten, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "vorlagen" ? this._renderVorlagenBereich(panelDaten, benutzerSensoren) : ""}
+        ${istAdmin && this._aktiverTab === "praemien" ? this._renderPraemienVerwaltungBereich(panelDaten, benutzerSensoren, praemienAktiviert) : ""}
       </div>
     `;
 
@@ -558,7 +665,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // z. B. eine gerade erst ausgewählte oder bewusst gelöschte Entität -
     // beim Neu-Aufbau nicht durch die alten, gespeicherten Vorlagendaten
     // überschrieben werden.
-    this._haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand);
+    this._haSelectorenEinbauen(panelDaten, gesicherterFormularZustand);
 
     this._eventListenerRegistrieren(istAdmin, benutzerSensoren);
 
@@ -767,8 +874,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * Benutzer als erledigt gemeldet hat, aber noch nicht bestätigt
    * wurden. Wird nur für Administratoren gerendert.
    */
-  _renderFreigabeBereich(uebersichtsSensor, benutzerSensoren) {
-    const wartende = uebersichtsSensor ? uebersichtsSensor.attributes.wartende_aufgaben || [] : [];
+  _renderFreigabeBereich(panelDaten, benutzerSensoren) {
+    const wartende = panelDaten.wartende_aufgaben || [];
 
     return `
       <div class="abschnitt admin-bereich">
@@ -812,13 +919,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * Sensor überhaupt ein "punktekonto"-Attribut besitzt - fehlt es,
    * ist das Feature serverseitig deaktiviert, siehe sensor.py).
    */
-  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, uebersichtsSensor) {
+  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten) {
     const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
     if (!eigener || eigener.zustand.attributes.punktekonto === undefined) {
       return "";
     }
     const guthaben = eigener.zustand.attributes.punktekonto;
-    const praemien = uebersichtsSensor ? uebersichtsSensor.attributes.praemien || [] : [];
+    const praemien = panelDaten.praemien || [];
 
     return `
       <div class="abschnitt">
@@ -858,11 +965,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
   }
 
   /** Admin-Bereich "Wartet auf Freigabe (Prämien)": angefragte Einlösungen, die noch bestätigt werden müssen. */
-  _renderPraemienFreigabeBereich(uebersichtsSensor, benutzerSensoren) {
-    if (!uebersichtsSensor || uebersichtsSensor.attributes.praemien === undefined) {
+  _renderPraemienFreigabeBereich(panelDaten, benutzerSensoren, praemienAktiviert) {
+    if (!praemienAktiviert) {
       return "";
     }
-    const wartende = uebersichtsSensor.attributes.wartende_praemien || [];
+    const wartende = panelDaten.wartende_praemien || [];
 
     return `
       <div class="abschnitt admin-bereich">
@@ -899,11 +1006,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
   }
 
   /** Admin-Bereich "Prämien verwalten": Liste + Formular zum Anlegen/Bearbeiten von Prämien. */
-  _renderPraemienVerwaltungBereich(uebersichtsSensor, benutzerSensoren) {
-    if (!uebersichtsSensor || uebersichtsSensor.attributes.praemien === undefined) {
+  _renderPraemienVerwaltungBereich(panelDaten, benutzerSensoren, praemienAktiviert) {
+    if (!praemienAktiviert) {
       return "";
     }
-    const praemien = uebersichtsSensor.attributes.praemien || [];
+    const praemien = panelDaten.praemien || [];
 
     const bearbeitetePraemie = this._bearbeitePraemieId
       ? praemien.find((p) => p.id === this._bearbeitePraemieId)
@@ -1026,12 +1133,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `;
   }
 
-  _renderAdminBereich(uebersichtsSensor, benutzerSensoren) {
+  _renderAdminBereich(panelDaten, benutzerSensoren) {
     // "offene_aufgaben" ist bereits auf offene Aufgaben begrenzt - ein
-    // zusätzlicher Client-seitiger Filter ist nicht mehr nötig, seit
-    // das separate (unbegrenzt wachsende) "alle_aufgaben"-Attribut
-    // entfernt wurde (siehe sensor.py).
-    const offeneAufgaben = uebersichtsSensor ? uebersichtsSensor.attributes.offene_aufgaben : [];
+    // zusätzlicher Client-seitiger Filter ist nicht nötig.
+    const offeneAufgaben = panelDaten.offene_aufgaben || [];
 
     // Wird gerade eine bestehende Aufgabe bearbeitet, deren Daten für die
     // Vorbelegung des Formulars heraussuchen. Existiert die Aufgabe nicht
@@ -1229,8 +1334,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * sich Aufgaben- und Vorlagen-Formular gegenseitig ausschließen
    * (siehe Konstruktor-Kommentar), gibt es dabei keine Kollision.
    */
-  _renderVorlagenBereich(uebersichtsSensor, benutzerSensoren) {
-    const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
+  _renderVorlagenBereich(panelDaten, benutzerSensoren) {
+    const vorlagen = panelDaten.vorlagen || [];
 
     const bearbeiteteVorlage = this._bearbeiteVorlageId
       ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
@@ -1509,13 +1614,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * irgendeinem Grund nicht verfügbar sein sollte (defensive
    * Absicherung, sollte in der Praxis nicht vorkommen).
    */
-  _haSelectorenEinbauen(uebersichtsSensor, gesicherterFormularZustand) {
+  _haSelectorenEinbauen(panelDaten, gesicherterFormularZustand) {
     const entitySlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_entity_id"]');
     const fromStateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_from_state"]');
     const stateSlot = this.shadowRoot.querySelector('.ha-selector-slot[data-feld="trigger_state"]');
     if (!entitySlot || !fromStateSlot || !stateSlot) return;
 
-    const vorlagen = uebersichtsSensor ? uebersichtsSensor.attributes.vorlagen || [] : [];
+    const vorlagen = panelDaten.vorlagen || [];
     const bearbeiteteVorlage = this._bearbeiteVorlageId
       ? vorlagen.find((v) => v.id === this._bearbeiteVorlageId)
       : null;
