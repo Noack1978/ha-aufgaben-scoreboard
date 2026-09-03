@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 
+import homeassistant.util.dt as dt_util
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -243,10 +244,29 @@ class _ZaehlerSensor(_BasisSensor):
     Gemeinsame Basisklasse für die fünf globalen, reinen Zähler-Sensoren
     (siehe Datei-Docstring für den architektonischen Hintergrund).
 
-    Jeder Zähler-Sensor hat außer der Anzahl NUR EIN Attribut -
-    "aufgaben_scoreboard_sensor_kind" - über das das Panel-JS die fünf
-    Sensoren unter allen "sensor."-Entitäten zuverlässig unterscheiden
-    kann, unabhängig von Sprache/Anzeigename der jeweiligen Entität.
+    Attribute:
+        - aufgaben_scoreboard_sensor_kind: über das das Panel-JS die
+          fünf Sensoren unter allen "sensor."-Entitäten zuverlässig
+          unterscheiden kann, unabhängig von Sprache/Anzeigename.
+        - aufgaben_scoreboard_aktualisiert_am: ein live berechneter
+          Zeitstempel (siehe unten für den Hintergrund, warum das nötig
+          ist).
+
+    WICHTIG - warum der Zeitstempel nötig ist: Der Sensor-ZUSTAND ist
+    bewusst eine reine Anzahl (siehe native_value der Unterklassen). Das
+    allein reicht als Änderungssignal für das Panel aber NICHT aus:
+    Wird eine BESTEHENDE Aufgabe/Vorlage/Prämie bearbeitet (Name,
+    Beschreibung, Punktzahl, ...) oder ändert eine Aufgabe nur ihren
+    Status (z. B. "offen" -> "wartet auf Freigabe"), bleibt die reine
+    ANZAHL oft unverändert - das Panel würde die Änderung dann fälschlich
+    für irrelevant halten und die JSON-Datei nicht neu abrufen (genau
+    dieser Bug trat auf: eine Bearbeitung wurde zwar gespeichert, blieb
+    im Panel aber unsichtbar, bis zufällig eine ANDERE Aktion die Anzahl
+    tatsächlich veränderte). Der bei JEDEM Aufruf frisch berechnete
+    Zeitstempel ändert sich dagegen bei WIRKLICH jeder Änderung - auch
+    bei gleichbleibender Anzahl - und sorgt so zuverlässig für ein neues
+    state_changed-Ereignis, das das Panel zum erneuten Abruf veranlasst
+    (siehe _berechneZaehlerSignatur() im Panel-JS).
     """
 
     _attr_native_unit_of_measurement = "Stück"
@@ -257,7 +277,10 @@ class _ZaehlerSensor(_BasisSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {ATTR_SENSOR_KIND: self._sensor_kind}
+        return {
+            ATTR_SENSOR_KIND: self._sensor_kind,
+            "aufgaben_scoreboard_aktualisiert_am": dt_util.utcnow().isoformat(),
+        }
 
 
 class AlleOffenenAufgabenSensor(_ZaehlerSensor):
