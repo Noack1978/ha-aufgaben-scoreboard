@@ -189,12 +189,22 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
   /**
    * Wie _berechneSignatur(), aber ausschließlich auf Basis der fünf
-   * schlanken Zähler-Sensoren (Zustand + deren einziges Marker-
-   * Attribut) - entscheidet, WANN die großen Panel-Daten per fetch()
-   * neu geladen werden müssen (siehe set hass()). Bewusst getrennt von
-   * _berechneSignatur(): nicht jede Neuzeichnung (z. B. ein reiner
-   * Punktestand-Wechsel eines Benutzer-Sensors) rechtfertigt auch
-   * einen neuen fetch()-Aufruf.
+   * schlanken Zähler-Sensoren - entscheidet, WANN die großen Panel-
+   * Daten per fetch() neu geladen werden müssen (siehe set hass()).
+   * Bewusst getrennt von _berechneSignatur(): nicht jede Neuzeichnung
+   * (z. B. ein reiner Punktestand-Wechsel eines Benutzer-Sensors)
+   * rechtfertigt auch einen neuen fetch()-Aufruf.
+   *
+   * WICHTIG: Es wird bewusst das komplette Attribut-Objekt einbezogen,
+   * NICHT nur zustand.state (die reine Anzahl) - eine frühere Version
+   * verglich ausschließlich die Anzahl, wodurch eine BEARBEITUNG einer
+   * bestehenden Aufgabe/Vorlage/Prämie (Name/Punktzahl/... geändert,
+   * aber die GESAMTZAHL bleibt gleich) im Panel unsichtbar blieb, bis
+   * zufällig eine andere Aktion die Anzahl tatsächlich veränderte. Die
+   * Sensoren liefern seither zusätzlich einen bei jedem Update frisch
+   * berechneten Zeitstempel als Attribut mit (siehe sensor.py,
+   * _ZaehlerSensor.extra_state_attributes), der sich bei WIRKLICH jeder
+   * Änderung ändert - dessen Einbeziehung hier behebt den Bug.
    */
   _berechneZaehlerSignatur(hass) {
     if (!hass) return "";
@@ -204,7 +214,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
       const zustand = hass.states[entityId];
       const attrs = zustand.attributes || {};
       if (attrs.aufgaben_scoreboard_sensor_kind) {
-        teile.push(`${entityId}=${zustand.state}`);
+        teile.push(`${entityId}=${zustand.state}|${JSON.stringify(attrs)}`);
       }
     }
     teile.sort();
