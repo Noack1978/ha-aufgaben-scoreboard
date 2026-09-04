@@ -480,14 +480,27 @@ Eintrag durch Fälligkeit/Erinnerung/Trigger) über Home Assistants
 Grenze von 16 KB pro Zustandsattribut hinaus, was zur wiederkehrenden
 Recorder-Warnung *"State attributes ... exceed maximum size of 16384
 bytes"* führte. Fünf schlanke Zähler-Sensoren (nur eine Zahl als
-Zustand) signalisieren dem Panel, wann es die JSON-Datei neu abrufen
-muss - die eigentlichen Daten selbst stehen dadurch **nicht mehr** als
-Sensor-Attribut zur Verfügung (betrifft `offene_aufgaben`,
-`wartende_aufgaben`, `vorlagen`, `praemien`, `wartende_praemien` des
-früheren Übersichts-Sensors). Die personenbezogenen Listen an den
-Benutzer-Punkte-Sensoren (`erledigte_aufgaben`, `eigene_praemien_verlauf`
-usw.) sind davon **nicht** betroffen - sie sind bereits auf 20-30
-Einträge begrenzt und bleiben normale Sensor-Attribute.
+Zustand plus ein live berechneter Zeitstempel) signalisieren dem Panel,
+wann es die JSON-Datei neu abrufen muss - die eigentlichen Daten selbst
+stehen dadurch **nicht mehr** als Sensor-Attribut zur Verfügung
+(betrifft `offene_aufgaben`, `wartende_aufgaben`, `vorlagen`,
+`praemien`, `wartende_praemien` des früheren Übersichts-Sensors).
+
+**Kurz darauf zeigte sich, dass dieselbe Grenze bei aktiver Nutzung
+auch an den Benutzer-Punkte-Sensoren erreichbar wurde**: Die dortigen
+Listen (`offene_aufgaben`, `wartende_aufgaben`, `erledigte_aufgaben`,
+`eigene_praemien_verlauf`, `punktekonto_verlauf`) waren zwar einzeln
+auf 20-30 Einträge begrenzt, konnten in Summe bei voll ausgeschöpften
+Limits (v. a. bei aktivem Prämien-System) aber wieder in die Nähe der
+16-KB-Grenze kommen. Diese Listen wurden deshalb ebenfalls ausgelagert:
+`offene_aufgaben`/`wartende_aufgaben` filtert das Panel jetzt selbst
+aus den bereits vorhandenen globalen Listen der JSON-Datei (keine
+Dopplung nötig), die übrigen drei stehen unter einem neuen
+`benutzer`-Bereich (nach Benutzer-ID) in derselben Datei. An den
+Benutzer-Punkte-Sensoren selbst bleiben nur noch `user_id`, `siege` und
+(bei aktiviertem Prämien-System) `punktekonto` als Attribute übrig -
+durchgehend wenige Byte groß, unabhängig davon, wie viele Aufgaben
+oder Prämien-Einlösungen sich über die Zeit ansammeln.
 
 Diese JSON-Datei ist eine reine Ableitung, keine eigenständige
 Datenquelle - ein Backup ist dafür nicht nötig, sie wird beim nächsten
