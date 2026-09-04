@@ -89,6 +89,7 @@ from .const import (
     DOMAIN,
     FRONTEND_URL_BASE,
     INTEGRATION_VERSION,
+    OPTION_ENABLED_USERS,
     OPTION_REWARDS_ENABLED,
     PANEL_ICON,
     PANEL_JS_FILENAME,
@@ -622,6 +623,28 @@ async def _ist_admin(hass: HomeAssistant, call: ServiceCall) -> bool:
     return bool(benutzer and benutzer.is_admin)
 
 
+def _ist_benutzer_zugelassen(entry: ConfigEntry, user_id: str) -> bool:
+    """
+    Prüft, ob ein Benutzer aktuell über den Options-Flow ("Berücksichtigte
+    Benutzer konfigurieren") zugelassen ist. Wurde die Auswahl noch nie
+    konfiguriert (Schlüssel fehlt in den Options, Rückgabewert None),
+    sind ALLE Benutzer zugelassen - identisches Verhalten zu sensor.py.
+
+    WICHTIG - Hintergrund dieser Prüfung: Ohne sie wirkte die
+    Benutzerauswahl bislang NUR kosmetisch (kein Sensor mehr, taucht
+    nicht mehr in der Zuweisungsliste im Panel auf) - ein aus der
+    Auswahl entfernter Benutzer konnte über complete_task/
+    request_redemption aber weiterhin ganz normal Aufgaben erledigen
+    bzw. Prämien anfragen, da diese Services die Auswahl gar nicht
+    prüften. Betraf insbesondere noch offene, VOR der Entfernung
+    zugewiesene Aufgaben sowie für alle offene Aufgaben (assigned_to
+    leer) - beide blieben für den entfernten Benutzer im Panel
+    weiterhin sicht- und bedienbar.
+    """
+    erlaubte_benutzer_ids = entry.options.get(OPTION_ENABLED_USERS)
+    return erlaubte_benutzer_ids is None or user_id in erlaubte_benutzer_ids
+
+
 def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: AufgabenScoreboardManager) -> None:
     """Registriert alle von dieser Integration bereitgestellten Services."""
 
@@ -688,6 +711,18 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             _LOGGER.warning(
                 "Benutzer hat versucht, eine Aufgabe für einen anderen Benutzer "
                 "zu erledigen, ohne Administrator zu sein - abgelehnt."
+            )
+            return
+
+        # Ein aus der Benutzerauswahl entfernter Benutzer darf keine
+        # Aufgaben mehr erledigen - unabhängig davon, ob die Aufgabe ihm
+        # noch von vor der Entfernung zugewiesen ist oder für alle offen
+        # war (siehe Docstring von _ist_benutzer_zugelassen()).
+        if not _ist_benutzer_zugelassen(entry, user_id):
+            _LOGGER.warning(
+                "Benutzer '%s' ist nicht (mehr) in der Benutzerauswahl enthalten - "
+                "Erledigen der Aufgabe abgelehnt.",
+                user_id,
             )
             return
 
@@ -781,6 +816,18 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
                 "anzufragen, ohne Administrator zu sein - abgelehnt."
             )
             return
+
+        # Ein aus der Benutzerauswahl entfernter Benutzer darf keine
+        # Prämien mehr anfragen (siehe Docstring von
+        # _ist_benutzer_zugelassen()).
+        if not _ist_benutzer_zugelassen(entry, user_id):
+            _LOGGER.warning(
+                "Benutzer '%s' ist nicht (mehr) in der Benutzerauswahl enthalten - "
+                "Prämien-Anfrage abgelehnt.",
+                user_id,
+            )
+            return
+
         await manager.async_request_redemption(call.data[ATTR_REWARD_ID], user_id)
 
     async def handle_approve_redemption(call: ServiceCall) -> None:

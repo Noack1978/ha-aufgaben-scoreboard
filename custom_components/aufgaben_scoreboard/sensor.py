@@ -98,15 +98,6 @@ async def async_setup_entry(
     # Prämien-bezogenen Zähler-Sensoren überhaupt angelegt.
     praemien_aktiviert = entry.options.get(OPTION_REWARDS_ENABLED, False)
 
-    entitaeten: list[SensorEntity] = [
-        AlleOffenenAufgabenSensor(manager, entry),
-        StandardaufgabenSensor(manager, entry),
-        WartendeAufgabenSensor(manager, entry),
-    ]
-    if praemien_aktiviert:
-        entitaeten.append(PraemienSensor(manager, entry))
-        entitaeten.append(WartendePraemienSensor(manager, entry))
-
     # Welche Benutzer berücksichtigt werden, kann über den Options-Flow
     # ("Konfigurieren" bei der Integration) eingeschränkt werden - z. B.
     # um technische Benutzer/Integrations-Accounts auszublenden, die
@@ -115,6 +106,15 @@ async def async_setup_entry(
     # verhält sich die Integration wie bisher und berücksichtigt ALLE
     # aktiven, nicht system-generierten Benutzer.
     erlaubte_benutzer_ids = entry.options.get(OPTION_ENABLED_USERS)
+
+    entitaeten: list[SensorEntity] = [
+        AlleOffenenAufgabenSensor(manager, entry, erlaubte_benutzer_ids),
+        StandardaufgabenSensor(manager, entry),
+        WartendeAufgabenSensor(manager, entry),
+    ]
+    if praemien_aktiviert:
+        entitaeten.append(PraemienSensor(manager, entry))
+        entitaeten.append(WartendePraemienSensor(manager, entry))
 
     # Für jeden "echten" Benutzer (kein System-Benutzer, aktiv, und
     # sofern konfiguriert in der Benutzerauswahl enthalten) einen
@@ -296,18 +296,49 @@ class _ZaehlerSensor(_BasisSensor):
 
 
 class AlleOffenenAufgabenSensor(_ZaehlerSensor):
-    """Zeigt die Anzahl aller aktuell offenen Aufgaben (unabhängig vom Benutzer)."""
+    """
+    Zeigt die Anzahl aller aktuell offenen Aufgaben (unabhängig vom
+    Benutzer).
+
+    Trägt zusätzlich zu den Standard-Attributen der Basisklasse noch
+    "aufgaben_scoreboard_erlaubte_benutzer" - die Liste der über den
+    Options-Flow ("Berücksichtigte Benutzer konfigurieren") aktuell
+    zugelassenen Benutzer-IDs, oder null, falls diese Auswahl nie
+    konfiguriert wurde (dann sind alle Benutzer zugelassen). Bewusst
+    HIER (statt an einem eigenen Sensor) untergebracht, weil dieser
+    Sensor als einziger der fünf Zähler-Sensoren IMMER angelegt wird
+    (unabhängig vom Prämien-System) und die Liste selbst winzig ist
+    (nur ein paar Benutzer-IDs) - kein eigener Sensor nötig.
+
+    Das Panel nutzt diese Liste, um Aktionen wie "Erledigt" oder
+    "Einlösen" für Benutzer auszublenden/zu deaktivieren, die aus der
+    Auswahl entfernt wurden - ergänzt die serverseitige Ablehnung in
+    __init__.py (siehe dortige _ist_benutzer_zugelassen()) um eine
+    entsprechende, konsistente Anzeige im Panel selbst.
+    """
 
     _attr_icon = "mdi:format-list-checks"
     _attr_name = "Offene Aufgaben (Alle Benutzer)"
 
-    def __init__(self, manager: AufgabenScoreboardManager, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        manager: AufgabenScoreboardManager,
+        entry: ConfigEntry,
+        erlaubte_benutzer_ids: list[str] | None,
+    ) -> None:
         super().__init__(manager, entry, SENSOR_KIND_OFFENE_AUFGABEN)
         self._attr_unique_id = ALL_TASKS_SENSOR_UNIQUE_ID
+        self._erlaubte_benutzer_ids = erlaubte_benutzer_ids
 
     @property
     def native_value(self) -> int:
         return len(self._manager.get_all_open_tasks())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        attribute = super().extra_state_attributes
+        attribute["aufgaben_scoreboard_erlaubte_benutzer"] = self._erlaubte_benutzer_ids
+        return attribute
 
 
 class StandardaufgabenSensor(_ZaehlerSensor):
