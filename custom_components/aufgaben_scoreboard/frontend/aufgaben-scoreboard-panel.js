@@ -288,6 +288,36 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return false;
   }
 
+  /**
+   * Prüft, ob ein Benutzer aktuell über den Options-Flow ("Berücksichtigte
+   * Benutzer konfigurieren") zugelassen ist - liest dafür das
+   * "aufgaben_scoreboard_erlaubte_benutzer"-Attribut vom "offene
+   * Aufgaben"-Zähler-Sensor (siehe sensor.py, AlleOffenenAufgabenSensor).
+   * null (Liste nie konfiguriert) bedeutet "alle Benutzer zugelassen".
+   *
+   * Ergänzt die serverseitige Ablehnung in __init__.py
+   * (_ist_benutzer_zugelassen()) um eine entsprechende Anzeige im Panel
+   * selbst: Ohne diese Prüfung sah ein aus der Auswahl entfernter
+   * Benutzer weiterhin ganz normal seine offenen Aufgaben samt
+   * "Erledigt"-Button - der Klick darauf wurde zwar serverseitig
+   * abgelehnt, aber ohne jede sichtbare Rückmeldung im Panel.
+   */
+  _istBenutzerZugelassen(userId) {
+    if (!this._hass) return true;
+    const states = this._hass.states;
+    for (const entityId in states) {
+      if (
+        entityId.startsWith("sensor.") &&
+        states[entityId].attributes &&
+        states[entityId].attributes.aufgaben_scoreboard_sensor_kind === "offene_aufgaben"
+      ) {
+        const erlaubte = states[entityId].attributes.aufgaben_scoreboard_erlaubte_benutzer;
+        return erlaubte === null || erlaubte === undefined || erlaubte.includes(userId);
+      }
+    }
+    return true;
+  }
+
   // -----------------------------------------------------------------
   // Service-Aufrufe
   // -----------------------------------------------------------------
@@ -517,6 +547,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const panelDaten = this._panelDaten;
     const praemienAktiviert = this._praemienAktiviert();
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
+    const eigeneZugelassen = eigeneUserId ? this._istBenutzerZugelassen(eigeneUserId) : true;
 
     // Tab-Definitionen: "benutzer" ist für ALLE sichtbar, alle
     // anderen nur für Administratoren.
@@ -649,10 +680,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
           <div class="abschnitt">
             <h2>Meine offenen Aufgaben</h2>
-            ${this._renderEigeneAufgaben(eigeneUserId, panelDaten)}
+            ${this._renderEigeneAufgaben(eigeneUserId, panelDaten, eigeneZugelassen)}
           </div>
 
-          ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten)}
+          ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten, eigeneZugelassen)}
         `
             : ""
         }
@@ -705,13 +736,20 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * ODER mir explizit zugewiesen ist; "wartend für mich" heißt, ICH habe
    * sie als erledigt gemeldet (pending_by).
    */
-  _renderEigeneAufgaben(eigeneUserId, panelDaten) {
+  _renderEigeneAufgaben(eigeneUserId, panelDaten, istZugelassen) {
     const alleOffenen = panelDaten.offene_aufgaben || [];
     const alleWartenden = panelDaten.wartende_aufgaben || [];
     const aufgaben = alleOffenen.filter(
       (a) => !a.assigned_to || a.assigned_to.length === 0 || a.assigned_to.includes(eigeneUserId)
     );
     const wartende = alleWartenden.filter((a) => a.pending_by === eigeneUserId);
+
+    const nichtZugelassenHinweis = !istZugelassen
+      ? `<div class="hinweis-warnung">
+          ⚠️ Du bist aktuell nicht (mehr) in der Benutzerauswahl dieser Integration enthalten
+          und kannst deshalb keine Aufgaben erledigen. Bitte wende dich an einen Administrator.
+        </div>`
+      : "";
 
     const offenListe =
       !aufgaben || aufgaben.length === 0
@@ -735,7 +773,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
             </div>
             <div class="aufgaben-aktion">
               <span class="punkte-badge">+${a.score}</span>
-              <button class="btn-primary eigene-erledigen" data-task-id="${a.id}">Erledigt</button>
+              <button
+                class="btn-primary eigene-erledigen"
+                data-task-id="${a.id}"
+                ${istZugelassen ? "" : "disabled"}
+              >Erledigt</button>
             </div>
           </div>`
           )
@@ -765,7 +807,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `
         : "";
 
-    return offenListe + wartendListe;
+    return nichtZugelassenHinweis + offenListe + wartendListe;
   }
 
   /**
@@ -948,7 +990,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * Sensor überhaupt ein "punktekonto"-Attribut besitzt - fehlt es,
    * ist das Feature serverseitig deaktiviert, siehe sensor.py).
    */
-  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten) {
+  _renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten, istZugelassen) {
     const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
     if (!eigener || eigener.zustand.attributes.punktekonto === undefined) {
       return "";
@@ -960,13 +1002,21 @@ class AufgabenScoreboardPanel extends HTMLElement {
       <div class="abschnitt">
         <h2>💰 Mein Punktekonto: ${guthaben} Punkte</h2>
         ${
+          !istZugelassen
+            ? `<div class="hinweis-warnung">
+                ⚠️ Du bist aktuell nicht (mehr) in der Benutzerauswahl dieser Integration enthalten
+                und kannst deshalb keine Prämien einlösen. Bitte wende dich an einen Administrator.
+              </div>`
+            : ""
+        }
+        ${
           praemien.length === 0
             ? `<div class="hinweis">Noch keine Prämien verfügbar.</div>`
             : `
           <div class="aufgaben-liste">
             ${praemien
               .map((p) => {
-                const leistbar = guthaben >= p.cost;
+                const leistbar = istZugelassen && guthaben >= p.cost;
                 return `
               <div class="aufgaben-karte ${leistbar ? "" : "wartend"}">
                 <div class="aufgaben-info">
@@ -2610,6 +2660,15 @@ class AufgabenScoreboardPanel extends HTMLElement {
       .hinweis {
         color: var(--secondary-text-color);
         padding: 12px 4px;
+      }
+      .hinweis-warnung {
+        color: var(--error-color, #f44336);
+        background: rgba(var(--rgb-error-color, 244,67,54), 0.08);
+        border: 1px solid var(--error-color, #f44336);
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        font-size: 0.9em;
       }
 
       .aufgaben-liste {
