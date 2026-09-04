@@ -318,6 +318,62 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return true;
   }
 
+  /**
+   * Schlüssel, unter dem im localStorage des Browsers gemerkt wird, dass
+   * ein Benutzer den "nicht mehr zugelassen"-Hinweis bereits mit
+   * "Verstanden" bestätigt hat. Bewusst pro Benutzer UND fest an diese
+   * Integration gebunden (Präfix) - unabhängig von anderen im selben
+   * Browser genutzten Diensten.
+   */
+  _hinweisGesehenSchluessel(userId) {
+    return `aufgaben_scoreboard_nicht_zugelassen_gesehen_${userId}`;
+  }
+
+  /**
+   * Prüft, ob der Benutzer den Hinweis bereits bestätigt hat. Nutzt
+   * bewusst try/catch: localStorage kann in seltenen Fällen (z. B.
+   * private Browsing-Modi mancher Browser, deaktivierte Website-Daten)
+   * einen Fehler werfen statt einfach nichts zurückzugeben - in diesem
+   * Fall wird der Hinweis sicherheitshalber IMMER angezeigt (fail-safe),
+   * statt das Panel komplett abstürzen zu lassen.
+   */
+  _hinweisBereitsGesehen(userId) {
+    try {
+      return localStorage.getItem(this._hinweisGesehenSchluessel(userId)) === "true";
+    } catch (fehler) {
+      return false;
+    }
+  }
+
+  /**
+   * Merkt sich dauerhaft (bis zum Zurücksetzen, siehe
+   * _hinweisZuruecksetzenFallsZugelassen()), dass der Hinweis bestätigt
+   * wurde.
+   */
+  _hinweisAlsGesehenMarkieren(userId) {
+    try {
+      localStorage.setItem(this._hinweisGesehenSchluessel(userId), "true");
+    } catch (fehler) {
+      // Siehe _hinweisBereitsGesehen() - wird bewusst ignoriert.
+    }
+  }
+
+  /**
+   * Setzt die Bestätigung automatisch zurück, SOBALD der Benutzer
+   * wieder zugelassen ist - so erscheint der Hinweis bei einer
+   * künftigen erneuten Entfernung wieder frisch, statt dauerhaft
+   * unterdrückt zu bleiben. Wird bei JEDEM Render aufgerufen, solange
+   * der Benutzer zugelassen ist (siehe _render()) - kostet nichts,
+   * schadet nichts, falls ohnehin schon zurückgesetzt.
+   */
+  _hinweisZuruecksetzenFallsZugelassen(userId) {
+    try {
+      localStorage.removeItem(this._hinweisGesehenSchluessel(userId));
+    } catch (fehler) {
+      // Siehe _hinweisBereitsGesehen() - wird bewusst ignoriert.
+    }
+  }
+
   // -----------------------------------------------------------------
   // Service-Aufrufe
   // -----------------------------------------------------------------
@@ -548,6 +604,9 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const praemienAktiviert = this._praemienAktiviert();
     const eigeneUserId = this._hass.user ? this._hass.user.id : null;
     const eigeneZugelassen = eigeneUserId ? this._istBenutzerZugelassen(eigeneUserId) : true;
+    if (eigeneUserId && eigeneZugelassen) {
+      this._hinweisZuruecksetzenFallsZugelassen(eigeneUserId);
+    }
 
     // Tab-Definitionen: "benutzer" ist für ALLE sichtbar, alle
     // anderen nur für Administratoren.
@@ -737,19 +796,25 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * sie als erledigt gemeldet (pending_by).
    */
   _renderEigeneAufgaben(eigeneUserId, panelDaten, istZugelassen) {
+    if (!istZugelassen) {
+      if (this._hinweisBereitsGesehen(eigeneUserId)) {
+        return "";
+      }
+      return `<div class="hinweis-warnung">
+        ⚠️ Du bist aktuell nicht (mehr) in der Benutzerauswahl dieser Integration enthalten
+        und kannst deshalb keine Aufgaben erledigen. Bitte wende dich an einen Administrator.
+        <div class="hinweis-warnung-aktion">
+          <button class="btn-secondary hinweis-verstanden-btn" data-user-id="${eigeneUserId}">Verstanden</button>
+        </div>
+      </div>`;
+    }
+
     const alleOffenen = panelDaten.offene_aufgaben || [];
     const alleWartenden = panelDaten.wartende_aufgaben || [];
     const aufgaben = alleOffenen.filter(
       (a) => !a.assigned_to || a.assigned_to.length === 0 || a.assigned_to.includes(eigeneUserId)
     );
     const wartende = alleWartenden.filter((a) => a.pending_by === eigeneUserId);
-
-    const nichtZugelassenHinweis = !istZugelassen
-      ? `<div class="hinweis-warnung">
-          ⚠️ Du bist aktuell nicht (mehr) in der Benutzerauswahl dieser Integration enthalten
-          und kannst deshalb keine Aufgaben erledigen. Bitte wende dich an einen Administrator.
-        </div>`
-      : "";
 
     const offenListe =
       !aufgaben || aufgaben.length === 0
@@ -807,7 +872,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
     `
         : "";
 
-    return nichtZugelassenHinweis + offenListe + wartendListe;
+    return offenListe + wartendListe;
   }
 
   /**
@@ -998,17 +1063,27 @@ class AufgabenScoreboardPanel extends HTMLElement {
     const guthaben = eigener.zustand.attributes.punktekonto;
     const praemien = panelDaten.praemien || [];
 
+    if (!istZugelassen) {
+      const hinweisTeil = this._hinweisBereitsGesehen(eigeneUserId)
+        ? ""
+        : `<div class="hinweis-warnung">
+            ⚠️ Du bist aktuell nicht (mehr) in der Benutzerauswahl dieser Integration enthalten
+            und kannst deshalb keine Prämien einlösen. Bitte wende dich an einen Administrator.
+            <div class="hinweis-warnung-aktion">
+              <button class="btn-secondary hinweis-verstanden-btn" data-user-id="${eigeneUserId}">Verstanden</button>
+            </div>
+          </div>`;
+      return `
+        <div class="abschnitt">
+          <h2>💰 Mein Punktekonto: ${guthaben} Punkte</h2>
+          ${hinweisTeil}
+        </div>
+      `;
+    }
+
     return `
       <div class="abschnitt">
         <h2>💰 Mein Punktekonto: ${guthaben} Punkte</h2>
-        ${
-          !istZugelassen
-            ? `<div class="hinweis-warnung">
-                ⚠️ Du bist aktuell nicht (mehr) in der Benutzerauswahl dieser Integration enthalten
-                und kannst deshalb keine Prämien einlösen. Bitte wende dich an einen Administrator.
-              </div>`
-            : ""
-        }
         ${
           praemien.length === 0
             ? `<div class="hinweis">Noch keine Prämien verfügbar.</div>`
@@ -1016,7 +1091,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
           <div class="aufgaben-liste">
             ${praemien
               .map((p) => {
-                const leistbar = istZugelassen && guthaben >= p.cost;
+                const leistbar = guthaben >= p.cost;
                 return `
               <div class="aufgaben-karte ${leistbar ? "" : "wartend"}">
                 <div class="aufgaben-info">
@@ -1899,6 +1974,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll(".hinweis-verstanden-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._hinweisAlsGesehenMarkieren(ev.target.getAttribute("data-user-id"));
+        this._render();
+      });
+    });
+
     if (!istAdmin) return;
 
     this.shadowRoot.querySelectorAll(".reset-punkte-btn").forEach((btn) => {
@@ -2669,6 +2751,13 @@ class AufgabenScoreboardPanel extends HTMLElement {
         padding: 10px 12px;
         margin-bottom: 12px;
         font-size: 0.9em;
+      }
+      .hinweis-warnung-aktion {
+        margin-top: 10px;
+      }
+      .hinweis-verstanden-btn {
+        font-size: 0.85em;
+        padding: 4px 12px;
       }
 
       .aufgaben-liste {
