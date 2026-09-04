@@ -206,6 +206,13 @@ werden – z. B. um technische Benutzer/Integrations-Accounts
 auszublenden. Die Änderung wird sofort wirksam (die Integration lädt
 sich automatisch neu).
 
+Diese Einschränkung wirkt **nicht nur kosmetisch**: Ein aus der
+Auswahl entfernter Benutzer kann auch dann keine Aufgaben mehr
+erledigen oder Prämien einlösen, wenn er direkten Zugriff auf sein
+eigenes Konto hat (serverseitig durchgesetzt, unabhängig vom Panel).
+Im Sidebar-Panel selbst sieht ein betroffener Benutzer zusätzlich
+einen Hinweis, und die entsprechenden Buttons sind deaktiviert.
+
 ### Standardaufgaben (Vorlagen)
 
 Im Verwaltungsbereich gibt es einen eigenen Abschnitt „Standardaufgaben“
