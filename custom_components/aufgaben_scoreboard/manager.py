@@ -366,25 +366,78 @@ class AufgabenScoreboardManager:
         # _async_persist() letztlich angestoßen wird.
         self.hass.add_job(async_dispatcher_send, self.hass, SIGNAL_UPDATE)
 
+    def _alle_bekannten_user_ids(self) -> set[str]:
+        """
+        Liefert alle Benutzer-IDs, die dem Manager aus irgendeinem
+        Zusammenhang bekannt sind - der Manager kennt die vollständige
+        Liste der Home-Assistant-Benutzer selbst NICHT (das weiß nur
+        sensor.py über hass.auth), braucht sie hier aber auch nicht: Ein
+        Benutzer, der in KEINEM der durchsuchten Bereiche auftaucht, hat
+        zwangsläufig auch keine erledigten Aufgaben/Prämien-Einlösungen/
+        Punktekonto-Bewegungen - für ihn liefern die per-Benutzer-Getter
+        unten ohnehin korrekt leere Listen, er muss also nicht separat
+        aufgeführt werden.
+
+        Durchsucht bewusst mehr als nur die drei naheliegenden Dicts
+        (scores/wins/points_account): Ein Benutzer könnte theoretisch
+        auch NUR in "completions"/"redemptions"/"points_history"
+        auftauchen (z. B. bei einer kostenlosen Prämie mit cost=0, ohne
+        je eine Aufgabe erledigt oder eine Siegerehrung gewonnen zu
+        haben) - dieser seltene Randfall wird hier mit abgedeckt, damit
+        seine (dann leere, aber vorhandene) Historie nicht fälschlich
+        unter panelDaten.benutzer fehlt.
+        """
+        return (
+            set(self._data["scores"])
+            | set(self._data["wins"])
+            | set(self._data["points_account"])
+            | {c["user_id"] for c in self._data["completions"]}
+            | {r["user_id"] for r in self._data["redemptions"]}
+            | {p["user_id"] for p in self._data["points_history"]}
+        )
+
     def _panel_daten_snapshot(self) -> dict[str, Any]:
         """
         Baut die vollständige "Panel-Daten"-Struktur, die als JSON-Datei
         geschrieben wird (siehe _async_schreibe_panel_daten()). Enthält
         genau die Listen, die früher als Sensor-Attribute exponiert
         wurden und die Home Assistants 16-KB-Grenze für Zustands-
-        attribute erreicht haben: offene/wartende Aufgaben,
-        Standardaufgaben (Vorlagen) und - sofern das Prämien-System
-        aktiviert ist, was der Manager selbst nicht weiß - IMMER
-        mitgeliefert (die Sensor-Attribut-Prüfung "praemien_aktiviert"
-        gibt es hier nicht, das Panel blendet die entsprechenden
-        Bereiche bei deaktiviertem Prämien-System selbst aus).
+        attribute erreicht (bzw. bei aktiver Nutzung absehbar erreicht)
+        haben:
+            - offene/wartende Aufgaben, Standardaufgaben (Vorlagen) und
+              Prämien (global, für alle Benutzer gemeinsam)
+            - PRO Benutzer: dessen Erledigungs-Verlauf sowie - sofern
+              das Prämien-System aktiviert ist (was der Manager selbst
+              nicht weiß, siehe unten) - dessen Prämien-Einlösungs- und
+              Punktekonto-Verlauf. Diese lagen bisher als Attribut am
+              jeweiligen Benutzer-Punkte-Sensor und liefen bei aktiver
+              Nutzung ebenfalls Gefahr, die 16-KB-Grenze zu erreichen
+              (z. B. bei vollständig ausgeschöpftem erledigte_aufgaben-
+              UND punktekonto_verlauf-UND eigene_praemien_verlauf-Limit
+              gleichzeitig).
+
+        Sowohl "praemien"/"wartende_praemien" (global) als auch die
+        beiden Prämien-Verlaufslisten pro Benutzer werden IMMER
+        mitgeliefert, unabhängig davon, ob das Prämien-System aktiviert
+        ist - die Prüfung "praemien_aktiviert" gibt es auf Manager-Ebene
+        nicht, das Panel blendet die entsprechenden Bereiche bei
+        deaktiviertem Prämien-System selbst aus.
         """
+        benutzer_daten = {}
+        for user_id in self._alle_bekannten_user_ids():
+            benutzer_daten[user_id] = {
+                "erledigte_aufgaben": self.get_completed_tasks_for_user(user_id),
+                "eigene_praemien_verlauf": self.get_redemptions_for_user(user_id),
+                "punktekonto_verlauf": self.get_points_history_for_user(user_id),
+            }
+
         return {
             "offene_aufgaben": self.get_all_open_tasks(),
             "wartende_aufgaben": self.get_all_pending_tasks(),
             "vorlagen": self.get_all_templates(),
             "praemien": self.get_all_rewards(),
             "wartende_praemien": self.get_pending_redemptions(),
+            "benutzer": benutzer_daten,
         }
 
     async def _async_schreibe_panel_daten(self) -> None:

@@ -5,36 +5,43 @@ Erzeugt:
     - Für jeden aktiven, "echten" Home-Assistant-Benutzer (also keine
       System-/Integrations-Benutzer wie den "Home Assistant Content"-
       oder Supervisor-Benutzer) einen Sensor, dessen Zustand der
-      aktuelle Punktestand ist. Als Attribute stehen die für den
-      Benutzer offenen Aufgaben sowie der zuletzt erledigte Verlauf
-      zur Verfügung (diese Listen bleiben klein/begrenzt - siehe
-      manager.py, get_completed_tasks_for_user() u. Ä. - und sind
-      NICHT vom unten beschriebenen Problem betroffen).
+      aktuelle Punktestand ist. Als Attribute stehen nur noch wenige,
+      durchgehend kleine Werte zur Verfügung (siehe Docstring von
+      BenutzerPunkteSensor - die früheren Listen-Attribute wurden aus
+      demselben Grund wie unten beschrieben entfernt).
     - Fünf globale, REINE Zähler-Entitäten (offene Aufgaben,
       Standardaufgaben, Prämien, wartende Aufgaben-Freigaben, wartende
       Prämien-Freigaben) - jede zeigt nur eine Zahl als Zustand plus
-      ein einziges kleines Marker-Attribut, KEINE Listen mehr.
+      zwei kleine Marker-/Zeitstempel-Attribute, KEINE Listen mehr.
 
-WICHTIG - Architekturentscheidung ab Version 2.0.0:
+WICHTIG - Architekturentscheidung ab Version 2.0.0 (in einer direkten
+Folgeversion auf die Benutzer-Sensoren ausgeweitet):
     Die eigentlichen (potenziell großen) Datenlisten - offene/wartende
-    Aufgaben, Standardaufgaben-Vorlagen, Prämien - stehen NICHT mehr
-    als Sensor-Attribut zur Verfügung. Sie wuchsen mit der Zeit (mehr
-    Vorlagen, mehr gleichzeitig offene Aufgaben, viele optionale Felder
-    pro Eintrag durch Fälligkeit/Erinnerung/Trigger) über Home
-    Assistants Grenze von 16 KB pro Zustandsattribut hinaus, was zu
-    der wiederkehrenden Recorder-Warnung "State attributes ... exceed
-    maximum size of 16384 bytes" führte.
+    Aufgaben, Standardaufgaben-Vorlagen, Prämien, sowie der persönliche
+    Erledigungs-/Prämien-/Punktekonto-Verlauf jedes Benutzers - stehen
+    NICHT mehr als Sensor-Attribut zur Verfügung. Sie wuchsen mit der
+    Zeit (mehr Vorlagen, mehr gleichzeitig offene Aufgaben, viele
+    optionale Felder pro Eintrag durch Fälligkeit/Erinnerung/Trigger,
+    bei aktivem Prämien-System zusätzlich lange Verlaufslisten pro
+    Benutzer) über Home Assistants Grenze von 16 KB pro Zustandsattribut
+    hinaus, was zu der wiederkehrenden Recorder-Warnung "State
+    attributes ... exceed maximum size of 16384 bytes" führte.
 
     Stattdessen schreibt der Manager diese Daten als JSON-Datei nach
     config/www/aufgaben_scoreboard/daten.json (siehe
-    AufgabenScoreboardManager._async_schreibe_panel_daten()) - Home
+    AufgabenScoreboardManager._async_schreibe_panel_daten() sowie
+    _panel_daten_snapshot() für den benutzerbezogenen Teil) - Home
     Assistant liefert den Inhalt von config/www/ automatisch und ohne
     jede eigene Registrierung unter /local/ aus, ganz ohne
-    Größenbegrenzung. Das Sidebar-Panel ruft diese Datei per fetch()
-    ab und tut das genau dann erneut, wenn sich einer der fünf hier
-    definierten Zähler-Sensoren ändert - die Sensoren dienen also nur
-    noch als leichtgewichtiges "es hat sich etwas geändert"-Signal,
-    nicht mehr als Datenquelle selbst.
+    Größenbegrenzung. Das Sidebar-Panel ruft diese Datei per fetch() ab,
+    sobald sich einer der fünf Zähler-Sensoren ändert - deren
+    Zeitstempel-Attribut (siehe _ZaehlerSensor) wird bei WIRKLICH jeder
+    Manager-Änderung neu geschrieben, unabhängig davon, ob die konkrete
+    Änderung nur einen einzelnen Benutzer betrifft (z. B. dessen
+    persönlicher Erledigungs-Verlauf) - ein separates Signal an den
+    Benutzer-Punkte-Sensoren selbst ist dafür nicht nötig. Die Sensoren
+    dienen also nur noch als leichtgewichtiges "es hat sich etwas
+    geändert"-Signal, nicht mehr als Datenquelle selbst.
 
 Alle Entitäten reagieren über den Home-Assistant-Dispatcher (Signal
 SIGNAL_UPDATE) sofort auf Änderungen, die der AufgabenScoreboardManager
@@ -178,27 +185,37 @@ class BenutzerPunkteSensor(_BasisSensor):
 
     Zustand: aktueller Punktestand (Ganzzahl).
     Attribute:
-        - offene_aufgaben: Liste der für diesen Benutzer offenen Aufgaben
-          (explizit zugewiesen oder für alle freigegeben).
-        - wartende_aufgaben: Aufgaben, die dieser Benutzer selbst als
-          erledigt gemeldet hat und die noch auf Admin-Freigabe warten.
-        - erledigte_aufgaben: Die letzten erledigten (freigegebenen)
-          Aufgaben dieses Benutzers (neueste zuerst), jeweils mit einem
-          "ruecknehmbar"-Flag für die Rücknahme-Funktion.
-        - siege: Anzahl gewonnener Siegerehrungen (dauerhaft, übersteht
-          normale Punktestand-Resets - siehe async_perform_awards()).
-        - punktekonto / eigene_praemien_verlauf / punktekonto_verlauf:
-          NUR vorhanden, wenn das Prämien-System aktiviert ist (siehe
-          Options-Flow). punktekonto_verlauf enthält die einzelnen
-          Zugänge (Siegerehrung) und Abgänge (Prämien-Einlösung).
         - user_id: Die interne Home-Assistant-Benutzer-ID (wird vom
           Sidebar-Panel benötigt, um Sensoren Benutzern zuzuordnen und
           Service-Aufrufe korrekt zu adressieren).
+        - siege: Anzahl gewonnener Siegerehrungen (dauerhaft, übersteht
+          normale Punktestand-Resets - siehe async_perform_awards()).
+        - punktekonto: NUR vorhanden, wenn das Prämien-System aktiviert
+          ist (siehe Options-Flow).
 
-    WICHTIG: Diese personenbezogenen Listen bleiben - anders als die
-    fünf globalen Zähler-Sensoren unten - weiterhin echte Attribute.
-    Sie sind serverseitig bereits auf 20-30 Einträge begrenzt (siehe
-    manager.py) und waren nie Teil des 16-KB-Problems.
+    WICHTIG - Architekturentscheidung seit einer weiteren, auf
+    Version 2.0.0 folgenden Überarbeitung: Die früher hier vorhandenen
+    fünf Listen-Attribute (offene_aufgaben, wartende_aufgaben,
+    erledigte_aufgaben, eigene_praemien_verlauf, punktekonto_verlauf)
+    wurden ENTFERNT. Sie waren zwar serverseitig einzeln auf 20-30
+    Einträge begrenzt, konnten bei aktiver Nutzung (alle Limits
+    gleichzeitig ausgeschöpft, viele Felder pro Prämien-Einlösungs-
+    Eintrag durch Internet-Zeit-Felder) in Summe trotzdem wieder in die
+    Nähe von bzw. über Home Assistants 16-KB-Grenze pro Zustandsattribut
+    kommen - das exakt gleiche Problem wie beim früheren
+    Übersichts-Sensor (siehe _ZaehlerSensor-Docstring), nur eine Ebene
+    tiefer.
+
+    Die Daten stehen seither wie folgt zur Verfügung:
+        - offene_aufgaben/wartende_aufgaben: Das Panel filtert sie
+          selbst aus den bereits vorhandenen GLOBALEN Listen
+          (panelDaten.offene_aufgaben/wartende_aufgaben aus der JSON-
+          Datei) nach user_id/assigned_to - eine separate, pro Benutzer
+          duplizierte Kopie wäre reine Redundanz gewesen.
+        - erledigte_aufgaben/eigene_praemien_verlauf/
+          punktekonto_verlauf: stehen jetzt unter
+          panelDaten.benutzer[user_id] in derselben JSON-Datei
+          (siehe AufgabenScoreboardManager._panel_daten_snapshot()).
     """
 
     _attr_icon = "mdi:star-check-outline"
@@ -227,15 +244,10 @@ class BenutzerPunkteSensor(_BasisSensor):
     def extra_state_attributes(self) -> dict:
         attribute = {
             "user_id": self._user_id,
-            "offene_aufgaben": self._manager.get_open_tasks_for_user(self._user_id),
-            "wartende_aufgaben": self._manager.get_pending_tasks_for_user(self._user_id),
-            "erledigte_aufgaben": self._manager.get_completed_tasks_for_user(self._user_id),
             "siege": self._manager.get_wins(self._user_id),
         }
         if self._praemien_aktiviert:
             attribute["punktekonto"] = self._manager.get_points_account(self._user_id)
-            attribute["eigene_praemien_verlauf"] = self._manager.get_redemptions_for_user(self._user_id)
-            attribute["punktekonto_verlauf"] = self._manager.get_points_history_for_user(self._user_id)
         return attribute
 
 
