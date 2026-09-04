@@ -254,7 +254,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
     for (const entityId in states) {
       if (!entityId.startsWith("sensor.")) continue;
       const zustand = states[entityId];
-      if (zustand.attributes && zustand.attributes.user_id && Array.isArray(zustand.attributes.offene_aufgaben)) {
+      // "user_id" allein reicht als Erkennungsmerkmal - "offene_aufgaben"
+      // stand früher zusätzlich als Attribut hier zur Verfügung, wurde
+      // aber entfernt (siehe Docstring von BenutzerPunkteSensor in
+      // sensor.py: diese Liste kommt jetzt aus panelDaten, gefiltert
+      // nach user_id, statt dupliziert pro Benutzer gespeichert zu sein).
+      if (zustand.attributes && zustand.attributes.user_id) {
         ergebnis.push({ entityId, zustand });
       }
     }
@@ -578,8 +583,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
                 const userId = b.zustand.attributes.user_id;
                 const aufgeklappt = this._aufgeklappterVerlaufUserId === userId;
                 const kontoAufgeklappt = this._aufgeklappterPunktekontoUserId === userId;
-                const verlauf = b.zustand.attributes.erledigte_aufgaben || [];
-                const kontoVerlauf = b.zustand.attributes.punktekonto_verlauf || [];
+                const verlauf = (panelDaten.benutzer && panelDaten.benutzer[userId] && panelDaten.benutzer[userId].erledigte_aufgaben) || [];
+                const kontoVerlauf = (panelDaten.benutzer && panelDaten.benutzer[userId] && panelDaten.benutzer[userId].punktekonto_verlauf) || [];
                 const siege = b.zustand.attributes.siege || 0;
                 const punktekonto = b.zustand.attributes.punktekonto;
                 const menuOffen = this._offenesRangMenuUserId === userId;
@@ -644,7 +649,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
 
           <div class="abschnitt">
             <h2>Meine offenen Aufgaben</h2>
-            ${this._renderEigeneAufgaben(benutzerSensoren, eigeneUserId)}
+            ${this._renderEigeneAufgaben(eigeneUserId, panelDaten)}
           </div>
 
           ${this._renderMeinPraemienBereich(benutzerSensoren, eigeneUserId, panelDaten)}
@@ -689,10 +694,24 @@ class AufgabenScoreboardPanel extends HTMLElement {
     this._vorlagenZeitplanUiAktualisieren();
   }
 
-  _renderEigeneAufgaben(benutzerSensoren, eigeneUserId) {
-    const eigener = benutzerSensoren.find((b) => b.zustand.attributes.user_id === eigeneUserId);
-    const aufgaben = eigener ? eigener.zustand.attributes.offene_aufgaben : [];
-    const wartende = eigener ? eigener.zustand.attributes.wartende_aufgaben : [];
+  /**
+   * Personal offene/wartende Aufgaben werden NICHT mehr dupliziert pro
+   * Benutzer gespeichert (frühere Sensor-Attribute), sondern hier aus
+   * den bereits vorhandenen GLOBALEN Listen (panelDaten.offene_aufgaben/
+   * wartende_aufgaben) client-seitig gefiltert - exakt dieselbe Regel
+   * wie AufgabenScoreboardManager.get_open_tasks_for_user()/
+   * get_pending_tasks_for_user() im Backend: eine Aufgabe ist "offen für
+   * mich", wenn sie niemandem explizit zugewiesen ist (für alle offen)
+   * ODER mir explizit zugewiesen ist; "wartend für mich" heißt, ICH habe
+   * sie als erledigt gemeldet (pending_by).
+   */
+  _renderEigeneAufgaben(eigeneUserId, panelDaten) {
+    const alleOffenen = panelDaten.offene_aufgaben || [];
+    const alleWartenden = panelDaten.wartende_aufgaben || [];
+    const aufgaben = alleOffenen.filter(
+      (a) => !a.assigned_to || a.assigned_to.length === 0 || a.assigned_to.includes(eigeneUserId)
+    );
+    const wartende = alleWartenden.filter((a) => a.pending_by === eigeneUserId);
 
     const offenListe =
       !aufgaben || aufgaben.length === 0
