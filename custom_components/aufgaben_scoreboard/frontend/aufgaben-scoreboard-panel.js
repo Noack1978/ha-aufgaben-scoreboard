@@ -86,6 +86,11 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // neuen fetch()-Aufruf rechtfertigt. Startwert null markiert "noch
     // nie geladen" - erzwingt den allerersten Abruf beim Start.
     this._letzteZaehlerSignatur = null;
+    // Fortlaufender Zähler, der die "Aktualität" einer laufenden
+    // fetch()-Anfrage markiert (siehe _aktualisierePanelDaten() für
+    // den Hintergrund: schützt vor einer Race Condition bei mehreren,
+    // schnell aufeinanderfolgenden Anfragen).
+    this._panelDatenAnfrageZaehler = 0;
     // Merkt sich einen "Fingerabdruck" der zuletzt gerenderten, für uns
     // relevanten Daten. Home Assistant ruft den hass-Setter bei JEDER
     // Zustandsänderung im gesamten System auf (also z. B. auch, wenn
@@ -145,20 +150,50 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * ersten Abruf aggressiv zwischenspeichern und spätere Änderungen
    * (neue Aufgabe, Freigabe, ...) nicht mehr bemerken, obwohl der
    * Zähler-Sensor sich korrekt geändert hat.
+   *
+   * WICHTIG - Schutz vor "Race Condition" bei mehreren, schnell
+   * aufeinanderfolgenden Aufrufen: Ändern sich kurz hintereinander
+   * mehrere Zähler-Sensoren (z. B. weil eine einzelne Aktion wie
+   * "Aufgabe erledigen" mehrere Datenänderungen auf einmal auslöst),
+   * kann set hass() mehrfach kurz hintereinander einen neuen fetch()
+   * anstoßen. Bei einer etwas langsameren oder schwankenden
+   * Netzwerkverbindung können die Antworten dieser parallel
+   * laufenden Anfragen in der FALSCHEN Reihenfolge zurückkommen - eine
+   * ältere, aber später eintreffende Antwort würde sonst die bereits
+   * aktuelleren Daten wieder überschreiben, und das Panel bliebe auf
+   * einem veralteten Stand hängen (typisches Symptom: "hilft erst nach
+   * Neustart der App", weil ein kompletter Neustart die Anfrage-Kette
+   * neu beginnt). Der Zähler "_panelDatenAnfrageZaehler" markiert bei
+   * jedem Aufruf eindeutig, welche Anfrage die ZULETZT gestartete war -
+   * eine Antwort wird nur noch übernommen, wenn zum Zeitpunkt ihres
+   * Eintreffens keine NEUERE Anfrage bereits unterwegs ist.
    */
   async _aktualisierePanelDaten() {
+    const eigeneAnfrageId = ++this._panelDatenAnfrageZaehler;
+    let neueDaten = null;
     try {
       const antwort = await fetch("/local/aufgaben_scoreboard/daten.json", { cache: "no-store" });
       if (!antwort.ok) {
         throw new Error(`HTTP ${antwort.status}`);
       }
-      this._panelDaten = await antwort.json();
+      neueDaten = await antwort.json();
     } catch (fehler) {
       // Bewusst NICHT this._panelDaten zurücksetzen - die zuletzt
       // erfolgreich geladenen (ggf. leicht veralteten) Daten weiter
       // anzuzeigen ist besser, als das Panel bei einem einzelnen
       // fehlgeschlagenen Abruf komplett zu leeren.
       console.error("Aufgaben-Scoreboard: Panel-Daten konnten nicht geladen werden.", fehler);
+    }
+
+    if (eigeneAnfrageId !== this._panelDatenAnfrageZaehler) {
+      // Inzwischen wurde eine NEUERE Anfrage gestartet (siehe oben) -
+      // dieses jetzt veraltete Ergebnis wird bewusst verworfen, um es
+      // nicht über bereits aktuellere Daten zu schreiben.
+      return;
+    }
+
+    if (neueDaten !== null) {
+      this._panelDaten = neueDaten;
     }
     this._render();
   }
