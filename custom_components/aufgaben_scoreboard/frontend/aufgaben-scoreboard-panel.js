@@ -167,12 +167,27 @@ class AufgabenScoreboardPanel extends HTMLElement {
    * jedem Aufruf eindeutig, welche Anfrage die ZULETZT gestartete war -
    * eine Antwort wird nur noch übernommen, wenn zum Zeitpunkt ihres
    * Eintreffens keine NEUERE Anfrage bereits unterwegs ist.
+   * WICHTIG - zusätzlicher Cache-Busting-Parameter in der URL: Die
+   * Home-Assistant-Companion-App (auf Android/iOS) registriert für ihre
+   * PWA-/Offline-Fähigkeit einen Service Worker, der Netzwerk-Anfragen
+   * abfangen und NACH EIGENEN Regeln aus einem eigenen Cache
+   * beantworten kann - diese Cache-Ebene liegt OBERHALB der normalen
+   * fetch()-Cache-Steuerung und ignoriert "cache: no-store" ggf.
+   * vollständig, wenn ihre eigene Caching-Strategie eine gespeicherte
+   * Antwort für dieselbe URL für "noch gültig" hält. Ein zusätzlicher,
+   * bei jedem Aufruf einmaliger Zeitstempel als Query-Parameter sorgt
+   * dafür, dass JEDE Anfrage eine für den Service Worker NEUE,
+   * unbekannte URL ist und deshalb zuverlässig an das eigentliche
+   * Netzwerk (und damit an die stets aktuelle Datei) weitergereicht
+   * wird, unabhängig von dessen Caching-Strategie.
    */
   async _aktualisierePanelDaten() {
     const eigeneAnfrageId = ++this._panelDatenAnfrageZaehler;
     let neueDaten = null;
     try {
-      const antwort = await fetch("/local/aufgaben_scoreboard/daten.json", { cache: "no-store" });
+      const antwort = await fetch(`/local/aufgaben_scoreboard/daten.json?t=${Date.now()}`, {
+        cache: "no-store",
+      });
       if (!antwort.ok) {
         throw new Error(`HTTP ${antwort.status}`);
       }
