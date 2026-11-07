@@ -1714,7 +1714,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
               <div class="hinweis-klein">
                 Erzeugt automatisch eine neue Aufgabe nach dem gewählten
                 Zeitplan - sofern nicht bereits eine offene Aufgabe aus
-                dieser Vorlage existiert. Kann zusätzlich zum
+                dieser Vorlage existiert. Bei "Alle X Tage" zählt das
+                Intervall ab der letzten Erledigung (Freigabe). Kann zusätzlich zum
                 Entitäts-Trigger oder unabhängig davon genutzt werden.
               </div>
             </fieldset>
