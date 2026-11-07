@@ -597,7 +597,7 @@ add_template:
       name: Zeitplan-Art
       description: >-
         Optional, unabhängig vom Entitäts-Trigger nutzbar. "days" legt
-        alle X Tage eine Aufgabe an, "weekly" jede bzw. alle X Wochen an
+        X Tage nach der letzten Erledigung (Freigabe) erneut eine Aufgabe an, "weekly" jede bzw. alle X Wochen an
         einem festen Wochentag (siehe schedule_interval/schedule_weekday).
         Duplikat-Schutz wie beim Entitäts-Trigger: keine neue Anlage,
         solange noch eine offene Aufgabe aus dieser Vorlage existiert.

@@ -152,6 +152,10 @@ class AufgabenScoreboardManager:
                     # der letzten Zeitplan-Anlage - verhindert eine zweite
                     # Anlage am selben Tag, selbst wenn die zuvor erzeugte
                     # Aufgabe zwischenzeitlich bereits erledigt wurde
+                "schedule_last_completed": "2026-01-01" oder None,  # Datum
+                    # der letzten FREIGEGEBENEN Erledigung einer aus dieser
+                    # Vorlage erzeugten Aufgabe - bei "days" zählt das
+                    # Intervall ab diesem Datum (statt ab schedule_anchor)
                 "created_at": "...",
             },
             ...
@@ -285,6 +289,12 @@ class AufgabenScoreboardManager:
         # den betreffenden Eintrag nicht sicher identifizieren.
         for eintrag in self._data["completions"]:
             eintrag.setdefault("completion_id", uuid.uuid4().hex)
+            # Ältere Einträge kennen die Vorlage noch nicht - falls die
+            # Aufgabe noch existiert, nachtragen (für den Zeitplan "ab
+            # letzter Erledigung").
+            if "template_id" not in eintrag:
+                alte_aufgabe = self._data["tasks"].get(eintrag.get("task_id"))
+                eintrag["template_id"] = alte_aufgabe.get("template_id") if alte_aufgabe else None
 
         # Abwärtskompatibilität: Standardaufgaben, die vor Einführung des
         # Zeitplan-Triggers angelegt wurden, haben die neuen Felder noch
@@ -298,6 +308,7 @@ class AufgabenScoreboardManager:
             vorlage.setdefault("schedule_weekday", None)
             vorlage.setdefault("schedule_anchor", None)
             vorlage.setdefault("schedule_last_triggered", None)
+            vorlage.setdefault("schedule_last_completed", None)
             vorlage.setdefault("trigger_from_state", None)
             vorlage.setdefault("trigger_above", None)
             vorlage.setdefault("trigger_below", None)
@@ -738,8 +749,10 @@ class AufgabenScoreboardManager:
                 "user_id": user_id,
                 "score": punkte,
                 "completed_at": _jetzt_iso(),
+                "template_id": aufgabe.get("template_id"),
             }
         )
+        self._merke_letzte_erledigung(aufgabe.get("template_id"))
 
         await self._async_persist()
         self.hass.add_job(
@@ -866,6 +879,8 @@ class AufgabenScoreboardManager:
         aufgabe = self._data["tasks"].get(eintrag["task_id"])
         if aufgabe is not None and aufgabe["status"] == TASK_STATUS_DONE:
             aufgabe["status"] = TASK_STATUS_OPEN
+        # Zeitplan-Referenz ("ab letzter Erledigung") neu bestimmen.
+        self._merke_letzte_erledigung(eintrag.get("template_id"))
 
         await self._async_persist()
         self.hass.add_job(
@@ -1436,6 +1451,7 @@ class AufgabenScoreboardManager:
             else None,
             "schedule_anchor": _heute_iso() if schedule_type else None,
             "schedule_last_triggered": None,
+            "schedule_last_completed": None,
             "due_in_days": int(due_in_days) if due_in_days else None,
             "reminder_days": int(reminder_days) if reminder_days else None,
             "created_at": _jetzt_iso(),
@@ -1523,6 +1539,7 @@ class AufgabenScoreboardManager:
                 vorlage["schedule_weekday"] = None
                 vorlage["schedule_anchor"] = None
                 vorlage["schedule_last_triggered"] = None
+                vorlage["schedule_last_completed"] = None
             else:
                 neuer_interval = (
                     int(schedule_interval)
@@ -1548,6 +1565,7 @@ class AufgabenScoreboardManager:
                     # Tage" auf "alle 3 Tage").
                     vorlage["schedule_anchor"] = _heute_iso()
                     vorlage["schedule_last_triggered"] = None
+                    vorlage["schedule_last_completed"] = None
 
         await self._async_persist()
         self.hass.add_job(self.hass.bus.async_fire, EVENT_TEMPLATE_UPDATED, {"template_id": template_id})
@@ -1627,6 +1645,24 @@ class AufgabenScoreboardManager:
             "%s Aufgabe(n) aus Standardaufgabe '%s' angelegt.", len(erzeugte_ids), vorlage.get("name")
         )
         return erzeugte_ids
+
+    def _merke_letzte_erledigung(self, template_id: str | None) -> None:
+        """
+        Setzt schedule_last_completed der Vorlage auf das Datum der
+        jüngsten freigegebenen Erledigung einer aus ihr erzeugten Aufgabe
+        (None, wenn es keine mehr gibt - z. B. nach Rücknahme). Die
+        Zeitplan-Art "days" zählt ihr Intervall ab diesem Datum.
+        Der Aufrufer ist für das Speichern zuständig.
+        """
+        vorlage = self._data["templates"].get(template_id) if template_id else None
+        if vorlage is None:
+            return
+        daten = [
+            c["completed_at"][:10]
+            for c in self._data["completions"]
+            if c.get("template_id") == template_id and c.get("completed_at")
+        ]
+        vorlage["schedule_last_completed"] = max(daten) if daten else None
 
     def _template_has_open_tasks(self, template_id: str) -> bool:
         """
@@ -1907,8 +1943,10 @@ class AufgabenScoreboardManager:
         Prüft, ob der Zeitplan einer Vorlage auf das übergebene Datum
         zutrifft.
 
-        - "days": zutreffend, wenn die Anzahl Tage seit schedule_anchor
-          ein ganzzahliges Vielfaches von schedule_interval ist.
+        - "days": zutreffend, wenn seit der letzten Erledigung
+          (schedule_last_completed, ersatzweise der letzten Anlage
+          schedule_last_triggered) mindestens schedule_interval Tage
+          vergangen sind; bei der allerersten Anlage am schedule_anchor.
         - "weekly": zutreffend, wenn heute der konfigurierte Wochentag
           ist UND die Anzahl KALENDERWOCHEN seit der Woche von
           schedule_anchor ein ganzzahliges Vielfaches von
@@ -1926,7 +1964,16 @@ class AufgabenScoreboardManager:
             return False
 
         if schedule_type == SCHEDULE_TYPE_DAYS:
-            return (heute - anchor).days % intervall == 0
+            # Das Intervall zählt ab der letzten Erledigung (bzw. ab der
+            # letzten Anlage, falls die Aufgabe ohne Erledigung gelöscht
+            # wurde). Noch keine Erledigung/Anlage: erste Anlage am Anchor.
+            referenz = max(
+                (d for d in (vorlage.get("schedule_last_completed"), vorlage.get("schedule_last_triggered")) if d),
+                default=None,
+            )
+            if referenz is None:
+                return (heute - anchor).days >= 0
+            return (heute - date.fromisoformat(referenz)).days >= intervall
 
         if schedule_type == SCHEDULE_TYPE_WEEKLY:
             ziel_wochentag = vorlage.get("schedule_weekday")
