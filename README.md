@@ -240,7 +240,9 @@ beliebig oft erzeugen:
 - **Automatisch per Zeitplan**: unabhängig vom Entitäts-Trigger (auch
   gleichzeitig mit ihm nutzbar) lässt sich eine Standardaufgabe so
   konfigurieren, dass sie
-  - **alle X Tage** (z. B. alle 3 Tage), oder
+  - **alle X Tage** (z. B. alle 3 Tage) – das Intervall zählt ab der
+    **letzten Erledigung (Freigabe)** der Aufgabe: wird sie am 1. freigegeben,
+    wird sie bei „alle 3 Tage“ am 4. neu angelegt, oder
   - **wöchentlich an einem festen Wochentag** (jede Woche oder alle X
     Wochen)
 
