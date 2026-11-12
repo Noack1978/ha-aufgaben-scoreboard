@@ -127,6 +127,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._bonusCodeAusUrlEinloesen();
+    this._bonusEventAbonnieren();
     const signatur = this._berechneSignatur(hass);
     const zaehlerSignatur = this._berechneZaehlerSignatur(hass);
     const zaehlerHatSichGeaendert = zaehlerSignatur !== this._letzteZaehlerSignatur;
@@ -514,6 +515,35 @@ class AufgabenScoreboardPanel extends HTMLElement {
     return ergebnis && ergebnis.response ? ergebnis.response : {};
   }
 
+  /**
+   * Abonniert (nur Admin, einmalig) das Event "Code eingelöst", damit die
+   * Codeliste sich sofort aktualisiert, ohne dass das Panel verlassen
+   * werden muss. Die Codes selbst stehen bewusst nicht in einem Sensor
+   * oder in daten.json - ohne dieses Event gäbe es keinen Auslöser.
+   */
+  _bonusEventAbonnieren() {
+    if (this._bonusAbo || !this._istAdmin() || !this._hass.connection) return;
+    this._bonusAbo = this._hass.connection
+      .subscribeEvents(() => {
+        if (this._bonusLaedt) {
+          this._bonusNochmalLaden = true;
+        } else {
+          this._bonusCodesLaden();
+        }
+      }, "aufgaben_scoreboard_bonus_code_redeemed")
+      .catch((fehler) => {
+        console.error("Aufgaben-Scoreboard: Event-Abo fehlgeschlagen.", fehler);
+        this._bonusAbo = null;
+      });
+  }
+
+  disconnectedCallback() {
+    if (this._bonusAbo) {
+      this._bonusAbo.then((abbestellen) => abbestellen && abbestellen()).catch(() => {});
+      this._bonusAbo = null;
+    }
+  }
+
   async _bonusCodesLaden() {
     if (!this._istAdmin() || this._bonusLaedt) return;
     this._bonusLaedt = true;
@@ -526,6 +556,10 @@ class AufgabenScoreboardPanel extends HTMLElement {
     }
     this._bonusLaedt = false;
     this._render();
+    if (this._bonusNochmalLaden) {
+      this._bonusNochmalLaden = false;
+      this._bonusCodesLaden();
+    }
   }
 
   async _bonusCodeErzeugen(punkte, notiz) {
