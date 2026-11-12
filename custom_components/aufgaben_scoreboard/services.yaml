@@ -819,3 +819,61 @@ create_task_from_template:
       required: true
       selector:
         text:
+
+create_bonus_code:
+  name: Extrapunkte-Code erzeugen
+  description: >-
+    Erzeugt einen einmalig einlösbaren Code für Extrapunkte (aufs
+    Punktekonto). Der Code steckt im QR-Link des Panels. Liefert eine
+    Antwort mit id und code (response_variable verwenden). Nur für
+    Administratoren.
+  fields:
+    amount:
+      name: Punkte
+      description: Anzahl der Extrapunkte, die gutgeschrieben werden.
+      required: true
+      example: 10
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    note:
+      name: Notiz
+      description: Optional, erscheint im Punktekonto-Verlauf ("Extrapunkte - Notiz").
+      required: false
+      example: Danke fürs Helfen
+      selector:
+        text:
+
+list_bonus_codes:
+  name: Extrapunkte-Codes auflisten
+  description: >-
+    Liefert alle Extrapunkte-Codes (offen und eingelöst) als Antwort.
+    Nur für Administratoren.
+
+remove_bonus_code:
+  name: Extrapunkte-Code löschen
+  description: Löscht einen Extrapunkte-Code (offen oder eingelöst). Nur für Administratoren.
+  fields:
+    code_id:
+      name: Code-ID
+      description: Die id des Codes (siehe list_bonus_codes).
+      required: true
+      selector:
+        text:
+
+redeem_bonus_code:
+  name: Extrapunkte-Code einlösen
+  description: >-
+    Löst einen Extrapunkte-Code für den aufrufenden Benutzer ein (Punkte
+    gehen aufs Punktekonto, der Code ist danach verbraucht). Wird vom
+    Panel beim Öffnen des QR-Links aufgerufen. Erfordert ein aktiviertes
+    Prämien-System.
+  fields:
+    code:
+      name: Code
+      description: Der geheime Code aus dem QR-Link.
+      required: true
+      selector:
+        text:

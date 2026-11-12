@@ -1,5 +1,7 @@
 # 🏆 Aufgaben-Punktesystem für Home Assistant
 
+[![Öffne dein Home Assistant und zeige das Repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Noack1978&repository=ha-aufgaben-scoreboard&category=integration)
+
 Eine benutzerdefinierte Home-Assistant-Integration, mit der du manuell
 Aufgaben (Chores) für die Benutzer deines HA-Servers anlegen kannst.
 Jede Aufgabe hat einen festen Punktwert. Benutzer erledigen Aufgaben,
@@ -43,13 +45,16 @@ Benutzern zugewiesen werden.
   Siegerehrung gespeist wird, sowie einlösbare Prämien – generisch (nur
   Protokollierung) oder "Internet-Zeit" (schaltet eine hinterlegte
   Entität für konfigurierbare Dauer ein, übersteht HA-Neustarts)
+- **Extrapunkte per QR-Code** (Prämien-System): einmalig einlösbarer
+  Code, der Punkte direkt aufs Punktekonto schenkt
 - **Services** für Automationen/Skripte: `add_task`, `update_task`,
   `remove_task`, `assign_task`, `unassign_task`, `complete_task`,
   `approve_task`, `reject_task`, `undo_completion`, `reset_score`,
   `perform_awards`, `reset_wins`, `add_template`, `update_template`,
   `remove_template`, `create_task_from_template`, `add_reward`,
   `update_reward`, `remove_reward`, `request_redemption`,
-  `approve_redemption`, `reject_redemption`
+  `approve_redemption`, `reject_redemption`, `create_bonus_code`,
+  `list_bonus_codes`, `remove_bonus_code`, `redeem_bonus_code`
 - Daten werden lokal in der Home-Assistant-Storage gespeichert – keine
   Cloud, keine externen Abhängigkeiten
 
@@ -381,6 +386,43 @@ Aufgaben-Erledigung muss ein Administrator die Anfrage erst freigeben
 (Bereich „Prämien-Einlösungen zur Freigabe"), bevor die Punkte
 abgebucht bzw. eine Internet-Zeit-Entität geschaltet wird.
 
+### Extrapunkte per QR-Code verschenken
+
+Nur bei aktiviertem Prämien-System. Administratoren erzeugen im Tab
+**🎁 Prämien** unter **„Extrapunkte-Codes"** einen Code mit Punktzahl und
+optionaler Notiz. Das Panel zeigt dazu einen **QR-Code** und den
+zugehörigen Link (zum Ausdrucken, Abfotografieren oder Weiterschicken).
+
+- Wer den Link öffnet, während er in Home Assistant angemeldet ist (z. B.
+  Kamera-Scan → Browser oder Companion-App), bekommt die Punkte sofort
+  **aufs Punktekonto** (Verlauf-Eintrag „Extrapunkte: <Notiz>"). Eine
+  Freigabe ist nicht nötig. Einlösen geht immer nur für den angemeldeten
+  Benutzer selbst, nicht für andere.
+- Jeder Code ist **einmalig**: nach dem Einlösen ist er verbraucht. Die
+  Liste zeigt offene und eingelöste Codes (wer, wann); Codes lassen sich
+  jederzeit löschen.
+- Der Link nutzt die Adresse, unter der der Admin das Panel gerade
+  geöffnet hat – für Scans von unterwegs das Panel daher über die externe
+  Adresse öffnen. Der Benutzer sollte vorher in der App bzw. im Browser
+  angemeldet sein.
+- Die Codes liegen nur im geschützten Home-Assistant-Storage (nicht in
+  der öffentlich abrufbaren `daten.json`) und werden von Admins per
+  Service-Antwort geladen.
+- Event beim Einlösen: `aufgaben_scoreboard_bonus_code_redeemed`
+  (`user_id`, `points`, `note`, `code_id`) – z. B. für eine
+  Benachrichtigung.
+
+Auch per Automation nutzbar, z. B. Code erzeugen und die Antwort
+weiterverwenden:
+
+```yaml
+action: aufgaben_scoreboard.create_bonus_code
+data:
+  amount: 10
+  note: Danke fürs Helfen
+response_variable: code
+```
+
 ### Custom Card im Dashboard
 
 Über den Dashboard-Editor eine neue Karte hinzufügen und
@@ -464,6 +506,10 @@ Personen → Benutzer**.
 | `aufgaben_scoreboard.request_redemption` | Prämie anfragen (wartet danach auf Freigabe, noch kein Punktabzug) | Nein¹ |
 | `aufgaben_scoreboard.approve_redemption` | Einlösung freigeben, Punkte werden abgebucht (+ ggf. Entität geschaltet) | ✅ |
 | `aufgaben_scoreboard.reject_redemption` | Einlösung ablehnen, kein Punktabzug                 | ✅        |
+| `aufgaben_scoreboard.create_bonus_code` | Einmalig einlösbaren Extrapunkte-Code erzeugen (liefert `id` und `code` als Antwort) | ✅ |
+| `aufgaben_scoreboard.list_bonus_codes` | Alle Extrapunkte-Codes als Antwort liefern             | ✅        |
+| `aufgaben_scoreboard.remove_bonus_code` | Extrapunkte-Code löschen                              | ✅        |
+| `aufgaben_scoreboard.redeem_bonus_code` | Code für den aufrufenden Benutzer einlösen (Panel-Aufruf) | Nein¹ |
 | `aufgaben_scoreboard.add_template`  | Standardaufgabe (Vorlage) anlegen, optional mit Entitäts- und/oder Zeitplan-Trigger | ✅        |
 | `aufgaben_scoreboard.update_template` | Standardaufgabe nachträglich bearbeiten               | ✅        |
 | `aufgaben_scoreboard.remove_template` | Standardaufgabe löschen                               | ✅        |
@@ -537,6 +583,10 @@ Der komplette Code ist ausführlich auf Deutsch kommentiert und
 dokumentiert, um Anpassungen und das Verständnis zu erleichtern.
 
 ## 📄 Lizenz
+
+Die mitgelieferte Datei `frontend/qrcode.js` ist „QR Code Generator for
+JavaScript" von Kazuhiko Arase (MIT-Lizenz, siehe Dateikopf).
+
 
 Dieses Projekt kann z. B. unter der MIT-Lizenz veröffentlicht werden –
 füge dazu eine `LICENSE`-Datei mit dem gewünschten Lizenztext hinzu.

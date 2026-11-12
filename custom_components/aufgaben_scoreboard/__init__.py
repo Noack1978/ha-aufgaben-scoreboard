@@ -51,14 +51,17 @@ from homeassistant.components.frontend import (
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.core import CoreState, HomeAssistant, ServiceCall, SupportsResponse, callback
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers.event import async_call_later
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     ATTR_AMOUNT,
+    ATTR_CODE,
+    ATTR_CODE_ID,
+    ATTR_NOTE,
     ATTR_ASSIGNED_TO,
     ATTR_COMPLETION_ID,
     ATTR_COST,
@@ -107,7 +110,11 @@ from .const import (
     SERVICE_APPROVE_TASK,
     SERVICE_ASSIGN_TASK,
     SERVICE_COMPLETE_TASK,
+    SERVICE_CREATE_BONUS_CODE,
     SERVICE_CREATE_TASK_FROM_TEMPLATE,
+    SERVICE_LIST_BONUS_CODES,
+    SERVICE_REDEEM_BONUS_CODE,
+    SERVICE_REMOVE_BONUS_CODE,
     SERVICE_DEDUCT_POINTS,
     SERVICE_PERFORM_AWARDS,
     SERVICE_REJECT_REDEMPTION,
@@ -197,6 +204,17 @@ SCHEMA_DEDUCT_POINTS = vol.Schema(
         vol.Optional(ATTR_REASON, default=""): cv.string,
     }
 )
+
+# Extrapunkte-Codes
+SCHEMA_CREATE_BONUS_CODE = vol.Schema(
+    {
+        vol.Required(ATTR_AMOUNT): vol.All(vol.Coerce(int), vol.Range(min=1, max=100000)),
+        vol.Optional(ATTR_NOTE, default=""): cv.string,
+    }
+)
+SCHEMA_LIST_BONUS_CODES = vol.Schema({})
+SCHEMA_REMOVE_BONUS_CODE = vol.Schema({vol.Required(ATTR_CODE_ID): cv.string})
+SCHEMA_REDEEM_BONUS_CODE = vol.Schema({vol.Required(ATTR_CODE): cv.string})
 
 # -----------------------------------------------------------------------
 # Freigabe-Workflow
@@ -575,6 +593,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 SERVICE_UNDO_COMPLETION,
                 SERVICE_RESET_SCORE,
                 SERVICE_DEDUCT_POINTS,
+                SERVICE_CREATE_BONUS_CODE,
+                SERVICE_LIST_BONUS_CODES,
+                SERVICE_REMOVE_BONUS_CODE,
+                SERVICE_REDEEM_BONUS_CODE,
                 SERVICE_PERFORM_AWARDS,
                 SERVICE_RESET_WINS,
                 SERVICE_ADD_REWARD,
@@ -910,6 +932,60 @@ def _async_register_services(hass: HomeAssistant, entry: ConfigEntry, manager: A
             )
             return
         await manager.async_create_task_from_template(call.data[ATTR_TEMPLATE_ID])
+
+    async def _admin_pflicht(call: ServiceCall) -> None:
+        if not await _ist_admin(hass, call):
+            raise ServiceValidationError("Nur Administratoren dürfen Extrapunkte-Codes verwalten.")
+
+    async def handle_create_bonus_code(call: ServiceCall) -> dict[str, Any]:
+        await _admin_pflicht(call)
+        return await manager.async_create_bonus_code(call.data[ATTR_AMOUNT], call.data.get(ATTR_NOTE, ""))
+
+    async def handle_list_bonus_codes(call: ServiceCall) -> dict[str, Any]:
+        await _admin_pflicht(call)
+        return {"codes": manager.list_bonus_codes()}
+
+    async def handle_remove_bonus_code(call: ServiceCall) -> None:
+        await _admin_pflicht(call)
+        await manager.async_remove_bonus_code(call.data[ATTR_CODE_ID])
+
+    async def handle_redeem_bonus_code(call: ServiceCall) -> dict[str, Any]:
+        # Eingelöst wird IMMER für den aufrufenden Benutzer - es gibt
+        # bewusst keinen user_id-Parameter (ein Code soll nicht für
+        # andere Benutzer eingelöst werden können).
+        user_id = call.context.user_id
+        if not user_id:
+            return {"ok": False, "reason": "kein_benutzer"}
+        if not _ist_benutzer_zugelassen(entry, user_id):
+            return {"ok": False, "reason": "nicht_zugelassen"}
+        if not entry.options.get(OPTION_REWARDS_ENABLED, False):
+            return {"ok": False, "reason": "praemien_deaktiviert"}
+        return await manager.async_redeem_bonus_code(call.data[ATTR_CODE], user_id)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CREATE_BONUS_CODE,
+        handle_create_bonus_code,
+        schema=SCHEMA_CREATE_BONUS_CODE,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_BONUS_CODES,
+        handle_list_bonus_codes,
+        schema=SCHEMA_LIST_BONUS_CODES,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_REMOVE_BONUS_CODE, handle_remove_bonus_code, schema=SCHEMA_REMOVE_BONUS_CODE
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REDEEM_BONUS_CODE,
+        handle_redeem_bonus_code,
+        schema=SCHEMA_REDEEM_BONUS_CODE,
+        supports_response=SupportsResponse.ONLY,
+    )
 
     hass.services.async_register(DOMAIN, SERVICE_ADD_TASK, handle_add_task, schema=SCHEMA_ADD_TASK)
     hass.services.async_register(DOMAIN, SERVICE_UPDATE_TASK, handle_update_task, schema=SCHEMA_UPDATE_TASK)

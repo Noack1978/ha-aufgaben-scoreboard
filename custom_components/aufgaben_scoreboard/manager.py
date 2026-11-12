@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import secrets
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    EVENT_BONUS_CODE_REDEEMED,
     EVENT_COMPLETION_UNDONE,
     EVENT_POINTS_DEDUCTED,
     EVENT_REWARD_REDEMPTION_APPROVED,
@@ -172,6 +174,18 @@ class AufgabenScoreboardManager:
                 # relevant, wenn das Prämien-System aktiviert ist
             ...
         },
+        "bonus_codes": {
+            "<code_id>": {
+                "id": "<code_id>",
+                "code": "<geheimer Token>",  # steckt im QR-Link
+                "points": 10,  # Extrapunkte aufs Punktekonto
+                "note": "Danke fürs Helfen",
+                "created_at": "...",
+                "redeemed_by": None oder user_id,
+                "redeemed_at": None oder "...",
+            },
+            ...
+        },
         "points_history": [
             {
                 "id": "<uuid>",
@@ -235,6 +249,7 @@ class AufgabenScoreboardManager:
             "wins": {},
             "points_account": {},
             "points_history": [],
+            "bonus_codes": {},
             "rewards": {},
             "redemptions": [],
         }
@@ -265,6 +280,7 @@ class AufgabenScoreboardManager:
             self._data["wins"] = gespeicherte_daten.get("wins", {})
             self._data["points_account"] = gespeicherte_daten.get("points_account", {})
             self._data["points_history"] = gespeicherte_daten.get("points_history", [])
+            self._data["bonus_codes"] = gespeicherte_daten.get("bonus_codes", {})
             self._data["rewards"] = gespeicherte_daten.get("rewards", {})
             self._data["redemptions"] = gespeicherte_daten.get("redemptions", [])
 
@@ -952,6 +968,92 @@ class AufgabenScoreboardManager:
             {"user_id": user_id, "amount": amount, "reason": reason},
         )
         _LOGGER.info("Benutzer '%s' wurden manuell %s Punkte abgezogen (Grund: %s).", user_id, amount, reason)
+
+
+    # ------------------------------------------------------------------
+    # Extrapunkte-Codes (einmalig einlösbar, z. B. als QR-Code)
+    # ------------------------------------------------------------------
+    #
+    # WICHTIG: Die Codes stehen bewusst NICHT in der Panel-Daten-Datei
+    # (config/www/..., ohne Anmeldung abrufbar) und nicht in
+    # Sensor-Attributen, sondern nur im geschützten Storage. Admins
+    # lesen sie über den Service "list_bonus_codes" (mit Antwort).
+
+    def list_bonus_codes(self) -> list[dict[str, Any]]:
+        """Alle Codes, neueste zuerst (offene und eingelöste)."""
+        return sorted(
+            (copy.deepcopy(c) for c in self._data["bonus_codes"].values()),
+            key=lambda c: c["created_at"],
+            reverse=True,
+        )
+
+    async def async_create_bonus_code(self, points: int, note: str = "") -> dict[str, Any]:
+        """Erzeugt einen neuen, einmalig einlösbaren Code."""
+        code_id = uuid.uuid4().hex
+        eintrag = {
+            "id": code_id,
+            "code": secrets.token_urlsafe(18),
+            "points": int(points),
+            "note": (note or "").strip(),
+            "created_at": _jetzt_iso(),
+            "redeemed_by": None,
+            "redeemed_at": None,
+        }
+        self._data["bonus_codes"][code_id] = eintrag
+        await self._async_persist()
+        _LOGGER.info("Extrapunkte-Code über %s Punkte angelegt.", eintrag["points"])
+        return copy.deepcopy(eintrag)
+
+    async def async_remove_bonus_code(self, code_id: str) -> bool:
+        """Löscht einen Code (offen oder eingelöst)."""
+        if self._data["bonus_codes"].pop(code_id, None) is None:
+            return False
+        await self._async_persist()
+        return True
+
+    async def async_redeem_bonus_code(self, code: str, user_id: str) -> dict[str, Any]:
+        """
+        Löst einen Code ein: schreibt dem Benutzer die Punkte auf das
+        Punktekonto gut (Verlauf-Eintrag "Extrapunkte: <Notiz>").
+        Der Code ist danach verbraucht.
+
+        :return: {"ok": bool, "points": int, "note": str, "reason": str}
+            - reason (nur bei ok=False): "unbekannt" | "bereits_eingeloest"
+        """
+        eintrag = next(
+            (
+                c
+                for c in self._data["bonus_codes"].values()
+                if secrets.compare_digest(str(c["code"]), str(code))
+            ),
+            None,
+        )
+        if eintrag is None:
+            return {"ok": False, "reason": "unbekannt"}
+        if eintrag["redeemed_by"]:
+            return {"ok": False, "reason": "bereits_eingeloest"}
+
+        jetzt = _jetzt_iso()
+        eintrag["redeemed_by"] = user_id
+        eintrag["redeemed_at"] = jetzt
+        self._data["points_account"][user_id] = self._data["points_account"].get(user_id, 0) + eintrag["points"]
+        self._data["points_history"].append(
+            {
+                "id": uuid.uuid4().hex,
+                "user_id": user_id,
+                "amount": eintrag["points"],
+                "reason": f"Extrapunkte: {eintrag['note']}" if eintrag["note"] else "Extrapunkte",
+                "timestamp": jetzt,
+            }
+        )
+        await self._async_persist()
+        self.hass.add_job(
+            self.hass.bus.async_fire,
+            EVENT_BONUS_CODE_REDEEMED,
+            {"code_id": eintrag["id"], "user_id": user_id, "points": eintrag["points"], "note": eintrag["note"]},
+        )
+        _LOGGER.info("Extrapunkte-Code (%s Punkte) von Benutzer '%s' eingelöst.", eintrag["points"], user_id)
+        return {"ok": True, "points": eintrag["points"], "note": eintrag["note"]}
 
     # ------------------------------------------------------------------
     # Siegerehrung

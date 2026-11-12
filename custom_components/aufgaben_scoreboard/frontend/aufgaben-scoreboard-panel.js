@@ -56,6 +56,14 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // (siehe _render() - fällt automatisch auf "benutzer" zurück,
     // falls der aktive Tab für die aktuellen Rechte nicht existiert).
     this._aktiverTab = "benutzer";
+    // Extrapunkte-Codes (nur Admin, kommen per Service-Antwort, NICHT aus
+    // daten.json - die Datei ist ohne Anmeldung abrufbar).
+    this._bonusCodes = null; // null = noch nicht geladen
+    this._bonusEntwurf = { points: 10, note: "" };
+    this._bonusQrCodeId = null; // Code, dessen QR gerade angezeigt wird
+    this._bonusMeldung = null; // Ergebnis-Banner nach dem Einlösen {typ, text}
+    this._bonusEinloesungGestartet = false;
+    this._qrLibPromise = null;
     // Merkt sich, für welchen Benutzer (falls überhaupt) das ⋮-Aktions-
     // Menü in der Rangliste gerade offen ist (Zurücksetzen-Buttons) -
     // null = keins offen. Immer nur eins gleichzeitig, hält die Zeilen
@@ -118,6 +126,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
    */
   set hass(hass) {
     this._hass = hass;
+    this._bonusCodeAusUrlEinloesen();
     const signatur = this._berechneSignatur(hass);
     const zaehlerSignatur = this._berechneZaehlerSignatur(hass);
     const zaehlerHatSichGeaendert = zaehlerSignatur !== this._letzteZaehlerSignatur;
@@ -493,6 +502,217 @@ class AufgabenScoreboardPanel extends HTMLElement {
     this._hass.callService("aufgaben_scoreboard", "reject_redemption", { redemption_id: redemptionId });
   }
 
+  /** Ruft einen Service MIT Antwort auf und gibt dessen response zurück. */
+  async _serviceMitAntwort(service, daten = {}) {
+    const ergebnis = await this._hass.callWS({
+      type: "call_service",
+      domain: "aufgaben_scoreboard",
+      service,
+      service_data: daten,
+      return_response: true,
+    });
+    return ergebnis && ergebnis.response ? ergebnis.response : {};
+  }
+
+  async _bonusCodesLaden() {
+    if (!this._istAdmin() || this._bonusLaedt) return;
+    this._bonusLaedt = true;
+    try {
+      const antwort = await this._serviceMitAntwort("list_bonus_codes");
+      this._bonusCodes = antwort.codes || [];
+    } catch (fehler) {
+      console.error("Aufgaben-Scoreboard: Extrapunkte-Codes konnten nicht geladen werden.", fehler);
+      this._bonusCodes = this._bonusCodes || [];
+    }
+    this._bonusLaedt = false;
+    this._render();
+  }
+
+  async _bonusCodeErzeugen(punkte, notiz) {
+    try {
+      const code = await this._serviceMitAntwort("create_bonus_code", { amount: punkte, note: notiz });
+      this._bonusQrCodeId = code.id || null;
+    } catch (fehler) {
+      console.error("Aufgaben-Scoreboard: Code konnte nicht erzeugt werden.", fehler);
+      alert("Der Code konnte nicht erzeugt werden.");
+      return;
+    }
+    this._bonusLaedt = false;
+    await this._bonusCodesLaden();
+  }
+
+  async _bonusCodeLoeschen(codeId) {
+    await this._hass.callService("aufgaben_scoreboard", "remove_bonus_code", { code_id: codeId });
+    if (this._bonusQrCodeId === codeId) this._bonusQrCodeId = null;
+    this._bonusLaedt = false;
+    await this._bonusCodesLaden();
+  }
+
+  /**
+   * Löst einen per QR-Link übergebenen Code (?bonus=...) für den
+   * angemeldeten Benutzer ein - genau einmal pro Seitenaufruf - und
+   * entfernt den Parameter anschließend aus der Adresszeile, damit ein
+   * Neuladen den (dann ohnehin verbrauchten) Code nicht erneut sendet.
+   */
+  async _bonusCodeAusUrlEinloesen() {
+    if (this._bonusEinloesungGestartet || !this._hass || !this._hass.user) return;
+    let code = null;
+    try {
+      code = new URLSearchParams(window.location.search).get("bonus");
+    } catch (fehler) {
+      return;
+    }
+    if (!code) return;
+    this._bonusEinloesungGestartet = true;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("bonus");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    } catch (fehler) {
+      // Adresszeile nicht änderbar - unkritisch.
+    }
+    const gruende = {
+      unbekannt: "Dieser Code ist ungültig.",
+      bereits_eingeloest: "Dieser Code wurde bereits eingelöst.",
+      nicht_zugelassen: "Du nimmst aktuell nicht teil und kannst keine Extrapunkte einlösen.",
+      praemien_deaktiviert: "Das Prämien-System ist nicht aktiviert.",
+      kein_benutzer: "Es konnte kein Benutzer ermittelt werden.",
+    };
+    try {
+      const antwort = await this._serviceMitAntwort("redeem_bonus_code", { code });
+      if (antwort.ok) {
+        this._bonusMeldung = {
+          typ: "ok",
+          text: `🎉 ${antwort.points} Extrapunkte gutgeschrieben${antwort.note ? ` (${antwort.note})` : ""} – sie liegen auf deinem Punktekonto.`,
+        };
+      } else {
+        this._bonusMeldung = { typ: "fehler", text: gruende[antwort.reason] || "Der Code konnte nicht eingelöst werden." };
+      }
+    } catch (fehler) {
+      console.error("Aufgaben-Scoreboard: Einlösen des Codes fehlgeschlagen.", fehler);
+      this._bonusMeldung = { typ: "fehler", text: "Der Code konnte nicht eingelöst werden." };
+    }
+    this._render();
+  }
+
+  /** Lädt die mitgelieferte QR-Bibliothek (qrcode.js) genau einmal. */
+  _qrBibliothekLaden() {
+    if (window.qrcode) return Promise.resolve(window.qrcode);
+    if (!this._qrLibPromise) {
+      this._qrLibPromise = new Promise((resolve, reject) => {
+        const skript = document.createElement("script");
+        skript.src = "/aufgaben_scoreboard_frontend/qrcode.js?v=2.2.0";
+        skript.onload = () => (window.qrcode ? resolve(window.qrcode) : reject(new Error("qrcode fehlt")));
+        skript.onerror = () => reject(new Error("qrcode.js nicht ladbar"));
+        document.head.appendChild(skript);
+      }).catch((fehler) => {
+        this._qrLibPromise = null;
+        throw fehler;
+      });
+    }
+    return this._qrLibPromise;
+  }
+
+  _bonusLink(code) {
+    return `${window.location.origin}/aufgaben-scoreboard?bonus=${encodeURIComponent(code)}`;
+  }
+
+  _bonusQrZeichnen() {
+    const ziel = this.shadowRoot.querySelector(".bonus-qr[data-code]");
+    if (!ziel) return;
+    const link = this._bonusLink(ziel.getAttribute("data-code"));
+    this._qrBibliothekLaden()
+      .then((qrcode) => {
+        const qr = qrcode(0, "M");
+        qr.addData(link);
+        qr.make();
+        ziel.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true });
+      })
+      .catch(() => {
+        ziel.textContent = "QR-Code konnte nicht erzeugt werden – bitte den Link darunter verwenden.";
+      });
+  }
+
+  _renderBonusMeldung() {
+    if (!this._bonusMeldung) return "";
+    const ok = this._bonusMeldung.typ === "ok";
+    return `
+      <div class="abschnitt bonus-meldung ${ok ? "bonus-ok" : "bonus-fehler"}">
+        <span>${this._escape(this._bonusMeldung.text)}</span>
+        <button class="btn-secondary" id="bonus-meldung-schliessen">OK</button>
+      </div>`;
+  }
+
+  _renderBonusCodesBereich(praemienAktiviert) {
+    if (!praemienAktiviert) return "";
+    const codes = this._bonusCodes;
+    // _nameFuerUserId() liefert den Namen bereits HTML-escaped.
+    const benutzerName = (userId) => this._nameFuerUserId(userId, this._sammleBenutzerSensoren());
+    const aktiverCode = codes && this._bonusQrCodeId ? codes.find((c) => c.id === this._bonusQrCodeId) : null;
+
+    return `
+      <div class="abschnitt admin-bereich">
+        <div class="admin-kopf"><h2>🎟️ Extrapunkte-Codes</h2></div>
+        <div class="hinweis-klein">
+          Einmalig einlösbarer QR-Code: Wer ihn scannt (angemeldet in Home
+          Assistant), bekommt die Punkte aufs Punktekonto. Der Link nutzt
+          die Adresse, unter der du dieses Panel gerade geöffnet hast.
+        </div>
+        <form class="bonus-formular" id="bonus-code-formular">
+          <label>Punkte
+            <input type="number" name="points" min="1" required value="${this._escape(String(this._bonusEntwurf.points))}" />
+          </label>
+          <label>Notiz (optional)
+            <input type="text" name="note" placeholder="z. B. Danke fürs Helfen" value="${this._escape(this._bonusEntwurf.note)}" />
+          </label>
+          <button type="submit" class="btn-primary">QR-Code erzeugen</button>
+        </form>
+
+        ${
+          aktiverCode
+            ? `
+          <div class="bonus-qr-box">
+            <div class="bonus-qr" data-code="${this._escape(aktiverCode.code)}">QR wird erzeugt …</div>
+            <div><b>${aktiverCode.points} Punkte</b>${aktiverCode.note ? ` – ${this._escape(aktiverCode.note)}` : ""}</div>
+            <input type="text" readonly class="bonus-link" value="${this._escape(this._bonusLink(aktiverCode.code))}" />
+            <button class="btn-secondary" id="bonus-qr-schliessen">QR ausblenden</button>
+          </div>`
+            : ""
+        }
+
+        <div class="aufgaben-liste">
+          ${
+            codes === null
+              ? `<div class="hinweis">Lade Codes …</div>`
+              : codes.length === 0
+                ? `<div class="hinweis">Noch keine Codes erzeugt.</div>`
+                : codes
+                    .map(
+                      (c) => `
+              <div class="aufgaben-karte">
+                <div class="aufgaben-info">
+                  <div class="aufgaben-name">${c.points} Punkte${c.note ? ` – ${this._escape(c.note)}` : ""}</div>
+                  <div class="aufgaben-beschreibung">${
+                    c.redeemed_by
+                      ? `✅ Eingelöst von ${benutzerName(c.redeemed_by)} am ${this._escape(
+                          new Date(c.redeemed_at).toLocaleString("de-DE")
+                        )}`
+                      : "🟢 Offen – noch nicht eingelöst"
+                  }</div>
+                </div>
+                <div class="aufgaben-aktion">
+                  ${c.redeemed_by ? "" : `<button class="btn-secondary bonus-qr-btn" data-code-id="${c.id}">QR anzeigen</button>`}
+                  <button class="btn-danger bonus-loeschen-btn" data-code-id="${c.id}">Löschen</button>
+                </div>
+              </div>`
+                    )
+                    .join("")
+          }
+        </div>
+      </div>
+    `;
+  }
+
   _aufgabeLoeschen(taskId) {
     this._hass.callService("aufgaben_scoreboard", "remove_task", {
       task_id: taskId,
@@ -685,6 +905,8 @@ class AufgabenScoreboardPanel extends HTMLElement {
           <h1>🏆 Aufgaben-Punktesystem</h1>
         </div>
 
+        ${this._renderBonusMeldung()}
+
         ${
           tabs.length > 1
             ? `
@@ -808,6 +1030,7 @@ class AufgabenScoreboardPanel extends HTMLElement {
         ${istAdmin && this._aktiverTab === "verwaltung" ? this._renderAdminBereich(panelDaten, benutzerSensoren) : ""}
         ${istAdmin && this._aktiverTab === "vorlagen" ? this._renderVorlagenBereich(panelDaten, benutzerSensoren) : ""}
         ${istAdmin && this._aktiverTab === "praemien" ? this._renderPraemienVerwaltungBereich(panelDaten, benutzerSensoren, praemienAktiviert) : ""}
+        ${istAdmin && this._aktiverTab === "praemien" ? this._renderBonusCodesBereich(praemienAktiviert) : ""}
       </div>
     `;
 
@@ -832,6 +1055,12 @@ class AufgabenScoreboardPanel extends HTMLElement {
     // ggf. gerade wiederhergestellten Auswahlwert anpassen - siehe
     // _vorlagenZeitplanUiAktualisieren().
     this._vorlagenZeitplanUiAktualisieren();
+
+    // Extrapunkte-Codes: beim ersten Öffnen des Prämien-Tabs laden, QR zeichnen.
+    if (istAdmin && this._aktiverTab === "praemien" && praemienAktiviert) {
+      if (this._bonusCodes === null) this._bonusCodesLaden();
+      this._bonusQrZeichnen();
+    }
   }
 
   /**
@@ -2187,6 +2416,48 @@ class AufgabenScoreboardPanel extends HTMLElement {
       });
     }
 
+    const bonusMeldungBtn = this.shadowRoot.getElementById("bonus-meldung-schliessen");
+    if (bonusMeldungBtn) {
+      bonusMeldungBtn.addEventListener("click", () => {
+        this._bonusMeldung = null;
+        this._render();
+      });
+    }
+    const bonusFormular = this.shadowRoot.getElementById("bonus-code-formular");
+    if (bonusFormular) {
+      bonusFormular.addEventListener("input", () => {
+        const d = new FormData(bonusFormular);
+        this._bonusEntwurf = { points: d.get("points") || "", note: d.get("note") || "" };
+      });
+      bonusFormular.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        const d = new FormData(bonusFormular);
+        const punkte = parseInt(d.get("points"), 10);
+        if (!punkte || punkte < 1) return;
+        this._bonusCodeErzeugen(punkte, String(d.get("note") || "").trim());
+      });
+    }
+    this.shadowRoot.querySelectorAll(".bonus-qr-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        this._bonusQrCodeId = ev.target.getAttribute("data-code-id");
+        this._render();
+      });
+    });
+    const bonusQrSchliessen = this.shadowRoot.getElementById("bonus-qr-schliessen");
+    if (bonusQrSchliessen) {
+      bonusQrSchliessen.addEventListener("click", () => {
+        this._bonusQrCodeId = null;
+        this._render();
+      });
+    }
+    this.shadowRoot.querySelectorAll(".bonus-loeschen-btn").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        if (confirm("Diesen Code wirklich löschen? Ein offener Code kann danach nicht mehr eingelöst werden.")) {
+          this._bonusCodeLoeschen(ev.target.getAttribute("data-code-id"));
+        }
+      });
+    });
+
     const togglePraemienBtn = this.shadowRoot.getElementById("toggle-praemien-formular");
     if (togglePraemienBtn) {
       togglePraemienBtn.addEventListener("click", () => {
@@ -2954,6 +3225,16 @@ class AufgabenScoreboardPanel extends HTMLElement {
         accent-color: var(--primary-color);
         cursor: pointer;
       }
+      .bonus-formular { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 8px 0; }
+      .bonus-formular label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85em; }
+      .bonus-formular input { padding: 8px; }
+      .bonus-qr-box { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 12px 0; padding: 12px; border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; }
+      .bonus-qr { width: 240px; max-width: 100%; background: #fff; padding: 4px; border-radius: 4px; }
+      .bonus-qr svg { width: 100%; height: auto; display: block; }
+      .bonus-link { width: 100%; box-sizing: border-box; padding: 6px; font-size: 0.8em; }
+      .bonus-meldung { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px; border-radius: 8px; }
+      .bonus-ok { background: rgba(76, 175, 80, 0.18); }
+      .bonus-fehler { background: rgba(244, 67, 54, 0.18); }
       .hinweis-klein {
         font-size: 0.85em;
         color: var(--secondary-text-color);

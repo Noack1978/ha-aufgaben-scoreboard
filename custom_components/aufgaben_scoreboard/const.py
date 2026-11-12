@@ -100,6 +100,9 @@ EVENT_TASK_REMINDER = f"{DOMAIN}_task_reminder"
 # Manueller Punktabzug durch einen Administrator, unabhängig von Aufgaben.
 EVENT_POINTS_DEDUCTED = f"{DOMAIN}_points_deducted"
 
+# Ein Extrapunkte-Code (z. B. per QR-Code) wurde eingelöst.
+EVENT_BONUS_CODE_REDEEMED = f"{DOMAIN}_bonus_code_redeemed"
+
 # -----------------------------------------------------------------------
 # Service-Namen (aufrufbar z. B. in Automationen/Skripten sowie über das
 # mitgelieferte Sidebar-Panel).
@@ -116,6 +119,12 @@ SERVICE_REJECT_TASK = "reject_task"
 SERVICE_UNDO_COMPLETION = "undo_completion"
 SERVICE_DEDUCT_POINTS = "deduct_points"
 SERVICE_RESET_SCORE = "reset_score"
+
+# Extrapunkte-Codes (einmalig einlösbar, z. B. als QR-Code)
+SERVICE_CREATE_BONUS_CODE = "create_bonus_code"
+SERVICE_LIST_BONUS_CODES = "list_bonus_codes"
+SERVICE_REMOVE_BONUS_CODE = "remove_bonus_code"
+SERVICE_REDEEM_BONUS_CODE = "redeem_bonus_code"
 
 # Standardaufgaben (Vorlagen): wiederverwendbare Aufgaben-Definitionen,
 # aus denen manuell (Button "Jetzt anlegen") oder automatisch (per
@@ -201,6 +210,11 @@ ATTR_REMINDER_DAYS = "reminder_days"
 # Punktabzug
 ATTR_AMOUNT = "amount"
 ATTR_REASON = "reason"
+
+# Extrapunkte-Codes
+ATTR_CODE = "code"
+ATTR_CODE_ID = "code_id"
+ATTR_NOTE = "note"
 
 # Zeitplan-Trigger für Standardaufgaben (zusätzlich/alternativ zum
 # Entitäts-Trigger): automatische Anlage nach Tages- oder
