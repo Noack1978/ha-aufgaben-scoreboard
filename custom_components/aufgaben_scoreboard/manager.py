@@ -885,10 +885,14 @@ class AufgabenScoreboardManager:
 
         user_id = eintrag["user_id"]
         punkte = eintrag["score"]
+        # Bei einem gedeckelten Punktabzug ("applied_score") nur den
+        # tatsächlich abgezogenen Betrag zurückgeben; ältere Einträge ohne
+        # dieses Feld verhalten sich wie bisher.
+        wirksame_punkte = eintrag.get("applied_score", punkte)
         aktueller_stand = self._data["scores"].get(user_id, 0)
         # Nicht unter 0 fallen - falls der Punktestand zwischenzeitlich
         # z. B. durch reset_score bereits auf 0 gesetzt wurde.
-        self._data["scores"][user_id] = max(0, aktueller_stand - punkte)
+        self._data["scores"][user_id] = max(0, aktueller_stand - wirksame_punkte)
 
         # Ursprüngliche Aufgabe wieder öffnen, sofern sie noch existiert
         # (wurde sie inzwischen gelöscht, bleibt nur die Punktekorrektur).
@@ -950,7 +954,11 @@ class AufgabenScoreboardManager:
         Punktestand abzieht).
         """
         aktueller_stand = self._data["scores"].get(user_id, 0)
-        self._data["scores"][user_id] = max(0, aktueller_stand - int(amount))
+        # Tatsächlich abgezogen werden kann höchstens der aktuelle Stand
+        # (nie unter 0). Dieser Betrag wird für die Rücknahme gemerkt,
+        # damit "Rückgängig" nicht mehr zurückgibt, als abgezogen wurde.
+        tatsaechlich_abgezogen = min(int(amount), max(0, aktueller_stand))
+        self._data["scores"][user_id] = aktueller_stand - tatsaechlich_abgezogen
         self._data["completions"].append(
             {
                 "completion_id": uuid.uuid4().hex,
@@ -958,6 +966,7 @@ class AufgabenScoreboardManager:
                 "task_name": f"Abzug: {reason}" if reason else "Manueller Punktabzug",
                 "user_id": user_id,
                 "score": -int(amount),
+                "applied_score": -tatsaechlich_abgezogen,
                 "completed_at": _jetzt_iso(),
             }
         )
